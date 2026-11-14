@@ -1,0 +1,152 @@
+@import "tailwindcss";
+
+:root {
+  --bg-0: #0d1117;
+  --bg-1: #121820;
+  --bg-2: #171e28;
+  --bg-3: #1c2430;
+  --line: #2a3444;
+  --text: #dce3ee;
+  --muted: #8a96a8;
+  --accent: #4ea1ff;
+  --danger: #d96b76;
+  --clip-v: #3b6fd9;
+  --clip-a: #2f9e6b;
+  --warn: #d6a34a;
+  --font-ui: "Segoe UI", "Candara", sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text);
+  font-family: var(--font-ui);
+  overflow: hidden;
+  user-select: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2f3b4d;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-shell {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 40px minmax(0, 1fr) 230px 24px;
+  background: var(--bg-0);
+}
+
+.app-shell > main {
+  min-height: 0;
+}
+
+.panel {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+}
+
+.btn {
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.btn:hover:not(:disabled) {
+  background: #243041;
+  border-color: #3a4a60;
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-accent {
+  background: #2b6cb5;
+  border-color: #2b6cb5;
+  color: #fff;
+  font-weight: 600;
+}
+.btn-accent:hover:not(:disabled) {
+  background: #3480d4;
+  border-color: #3480d4;
+  filter: none;
+}
+.btn-danger {
+  background: #2a171b;
+  border-color: #5a3038;
+  color: #efb4bb;
+}
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.toolbar-select {
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.field-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.progress-track {
+  height: 4px;
+  width: 100%;
+  border-radius: 999px;
+  background: #243041;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
