@@ -58,7 +58,7 @@ button {
 .app-shell {
   height: 100%;
   display: grid;
-  grid-template-rows: 40px minmax(0, 1fr) 230px 24px;
+  grid-template-rows: 40px minmax(0, 1fr) minmax(220px, 32vh) 24px;
   background: var(--bg-0);
 }
 
