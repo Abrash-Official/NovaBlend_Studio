@@ -72,6 +72,8 @@ export interface MediaItem {
   previewPath: string;
   /** Optional poster image for Media Bin */
   thumbPath?: string;
+  /** Still image used for freeze / extendable holds */
+  stillPath?: string;
   duration: number;
   width: number;
   height: number;
@@ -103,6 +105,14 @@ export interface TimelineClip {
   effects: ClipEffects;
   /** Present when trackKind === "text" */
   text?: TextStyle;
+  /** Freeze / image hold — duration can be dragged freely */
+  isStill?: boolean;
+  /** Path to still frame (jpg) when isStill */
+  stillPath?: string;
+}
+
+export function isStillClip(clip: TimelineClip): boolean {
+  return !!clip.isStill || !!clip.stillPath;
 }
 
 export type ExportFps = 25 | 30 | 60;

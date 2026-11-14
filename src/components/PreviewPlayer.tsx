@@ -1,7 +1,13 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
-import { DEFAULT_TEXT, isTextClip, TextStyle, TimelineClip } from "../types/editor";
+import {
+  DEFAULT_TEXT,
+  isStillClip,
+  isTextClip,
+  TextStyle,
+  TimelineClip,
+} from "../types/editor";
 
 function lerp(
   keys: { time: number; value: number }[],
@@ -321,16 +327,28 @@ export function PreviewPlayer() {
             const video = ensureVideo(clip.id, src);
             video.muted = clip.id !== audibleId;
 
-            const local = Math.min(
-              clip.outPoint - 0.04,
-              Math.max(
-                clip.inPoint,
-                (ph - clip.start) * (clip.effects.speed || 1) + clip.inPoint,
-              ),
-            );
+            // Freeze / still: always hold the first frame (stretchable on timeline)
+            const local = isStillClip(clip)
+              ? Math.min(0.04, Math.max(0, clip.inPoint))
+              : Math.min(
+                  clip.outPoint - 0.04,
+                  Math.max(
+                    clip.inPoint,
+                    (ph - clip.start) * (clip.effects.speed || 1) + clip.inPoint,
+                  ),
+                );
 
             const drift = Math.abs((video.currentTime || 0) - local);
-            if (!state.isPlaying) {
+            if (isStillClip(clip)) {
+              if (video.readyState >= 1 && drift > 0.02) {
+                try {
+                  video.currentTime = local;
+                } catch {
+                  /* ignore */
+                }
+              }
+              if (!video.paused) video.pause();
+            } else if (!state.isPlaying) {
               if (drift > 0.04 && video.readyState >= 1) {
                 try {
                   video.currentTime = local;
@@ -346,10 +364,12 @@ export function PreviewPlayer() {
               }
             }
 
-            if (state.isPlaying) {
-              if (video.paused) void video.play().catch(() => undefined);
-            } else if (!video.paused) {
-              video.pause();
+            if (!isStillClip(clip)) {
+              if (state.isPlaying) {
+                if (video.paused) void video.play().catch(() => undefined);
+              } else if (!video.paused) {
+                video.pause();
+              }
             }
 
             if (video.readyState < 2 || !video.videoWidth) {

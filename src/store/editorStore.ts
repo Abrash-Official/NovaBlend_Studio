@@ -5,6 +5,7 @@ import {
   ClipEffects,
   DEFAULT_EFFECTS,
   DEFAULT_TEXT,
+  isStillClip,
   isTextClip,
   MediaItem,
   ProjectSnapshot,
@@ -19,9 +20,8 @@ function uid(prefix = "id") {
 
 const defaultTracks: Track[] = [
   { id: "v1", kind: "video", name: "V1", index: 0 },
-  { id: "v2", kind: "video", name: "V2 Overlay", index: 1 },
-  { id: "t1", kind: "text", name: "T1 Text", index: 2 },
-  { id: "a1", kind: "audio", name: "A1", index: 3 },
+  { id: "t1", kind: "text", name: "T1 Text", index: 1 },
+  { id: "a1", kind: "audio", name: "A1", index: 2 },
 ];
 
 function normalizeClip(c: TimelineClip): TimelineClip {
@@ -35,6 +35,25 @@ function normalizeClip(c: TimelineClip): TimelineClip {
     previewPath: c.previewPath || "",
     text: { ...DEFAULT_TEXT(), ...(c.text || {}) },
   };
+}
+
+/** Remap clips from older layouts (V2 Overlay removed) onto V1 / T1 / A1. */
+function migrateClipTracks(clips: TimelineClip[]): TimelineClip[] {
+  const videoIdx = defaultTracks.find((t) => t.kind === "video")!.index;
+  const textIdx = defaultTracks.find((t) => t.kind === "text")!.index;
+  const audioIdx = defaultTracks.find((t) => t.kind === "audio")!.index;
+
+  return clips.map((c) => {
+    const base = normalizeClip(c);
+    if (isTextClip(base) || base.trackKind === "text") {
+      return { ...base, trackIndex: textIdx, trackKind: "text" as const };
+    }
+    if (base.trackKind === "audio") {
+      return { ...base, trackIndex: audioIdx, trackKind: "audio" as const };
+    }
+    // All video (including old V2 overlay) lands on V1
+    return { ...base, trackIndex: videoIdx, trackKind: "video" as const };
+  });
 }
 
 interface EditorState {
@@ -218,7 +237,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       trackIndex ??
       (media.hasVideo
         ? tracks.find((t) => t.kind === "video")?.index ?? 0
-        : tracks.find((t) => t.kind === "audio")?.index ?? 3);
+        : tracks.find((t) => t.kind === "audio")?.index ?? 2);
     const track = tracks.find((t) => t.index === preferred) ?? tracks[0];
     const sameTrack = get().clips.filter((c) => c.trackIndex === track.index);
     const start = sameTrack.reduce(
@@ -405,8 +424,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ...clip,
       id: uid(isTextClip(clip) ? "text" : "clip"),
       start: clip.start + clip.duration,
-      effects: { ...clip.effects, scaleKeyframes: [...clip.effects.scaleKeyframes], opacityKeyframes: [...clip.effects.opacityKeyframes] },
+      effects: {
+        ...clip.effects,
+        scaleKeyframes: [...clip.effects.scaleKeyframes],
+        opacityKeyframes: [...clip.effects.opacityKeyframes],
+      },
       text: clip.text ? { ...clip.text } : undefined,
+      isStill: clip.isStill,
+      stillPath: clip.stillPath,
     };
     set((s) => ({
       clips: [...s.clips, copy],
@@ -455,7 +480,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       mediaId: media.id,
       mediaPath: media.path,
       previewPath: media.previewPath || media.path,
-      name: `Freeze · ${freezeDuration.toFixed(1)}s`,
+      name: "Freeze",
       trackIndex: clip.trackIndex,
       trackKind: "video",
       hasAudio: false,
@@ -464,6 +489,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       inPoint: 0,
       outPoint: freezeDuration,
       effects: DEFAULT_EFFECTS(),
+      isStill: true,
+      stillPath: media.stillPath || media.path,
     };
     const right: TimelineClip = {
       ...clip,
@@ -503,7 +530,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const clip = get().clips.find((c) => c.id === id);
     if (!clip) return;
     const media = get().media.find((m) => m.id === clip.mediaId);
-    const mediaDur = isTextClip(clip)
+    // Text + freeze/stills can be stretched freely (CapCut-style image hold)
+    const freeLen = isTextClip(clip) || isStillClip(clip);
+    const mediaDur = freeLen
       ? Math.max(clip.outPoint + 120, 600)
       : (media?.duration ?? Math.max(clip.outPoint, clip.inPoint + 0.05));
     const speed = Math.max(0.05, clip.effects.speed || 1);
@@ -541,7 +570,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           newTrack !== undefined
             ? s.tracks.find((t) => t.index === newTrack)
             : undefined;
-        // Text clips stay on the text track kind
+
+        // Only allow dropping onto a track of the same kind
+        if (track && track.kind !== c.trackKind) {
+          return { ...c, start: Math.max(0, newStart) };
+        }
+
         if (isTextClip(c)) {
           const textTrack = s.tracks.find((t) => t.kind === "text");
           return {
@@ -551,11 +585,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
             trackKind: "text" as const,
           };
         }
+
         return {
           ...c,
           start: Math.max(0, newStart),
-          trackIndex: newTrack ?? c.trackIndex,
-          trackKind: track?.kind === "text" ? c.trackKind : (track?.kind ?? c.trackKind),
+          trackIndex: track?.index ?? c.trackIndex,
+          trackKind: track?.kind ?? c.trackKind,
         };
       }),
       dirty: true,
@@ -627,11 +662,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         previewPath: m.previewPath || m.path,
       })),
       tracks: defaultTracks,
-      clips: snap.clips.map(normalizeClip).map((c) => {
-        if (!isTextClip(c)) return c;
-        const textTrack = defaultTracks.find((t) => t.kind === "text")!;
-        return { ...c, trackIndex: textTrack.index, trackKind: "text" as const };
-      }),
+      clips: migrateClipTracks(snap.clips),
       selectedClipId: null,
       playhead: snap.playhead || 0,
       isPlaying: false,

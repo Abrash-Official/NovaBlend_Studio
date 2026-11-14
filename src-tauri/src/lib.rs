@@ -1,6 +1,6 @@
 mod ffmpeg_engine;
 
-use ffmpeg_engine::{ExportRequest, FfmpegResult, MediaProbe};
+use ffmpeg_engine::{ExportRequest, FfmpegResult, FreezeResult, MediaProbe};
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -72,12 +72,26 @@ async fn create_freeze_clip(
     time: f64,
     duration: f64,
     fps: f64,
-) -> Result<String, String> {
+) -> Result<FreezeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ffmpeg_engine::create_freeze_clip(&app, &path, time, duration, fps)
     })
     .await
     .map_err(|e| format!("freeze task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn extract_media_audio(
+    app: AppHandle,
+    path: String,
+    in_point: f64,
+    out_point: f64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_engine::extract_media_audio(&app, &path, in_point, out_point)
+    })
+    .await
+    .map_err(|e| format!("extract audio task failed: {e}"))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -96,7 +110,8 @@ pub fn run() {
             export_timeline,
             extract_audio,
             split_hint,
-            create_freeze_clip
+            create_freeze_clip,
+            extract_media_audio
         ])
         .run(tauri::generate_context!())
         .expect("error while running NovaBlend Studio");

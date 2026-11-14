@@ -1,11 +1,11 @@
-import { ask, open, save } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { useEditorStore } from "../store/editorStore";
-import { ASPECT_PRESETS, AspectRatioId } from "../types/editor";
+import { ASPECT_PRESETS, AspectRatioId, isTextClip } from "../types/editor";
 import {
   createPreviewProxy,
-  extractAudio,
+  extractMediaAudio,
   PreviewProgressEvent,
   previewThumbPath,
   probeMedia,
@@ -51,9 +51,6 @@ export function Toolbar() {
     backgroundBlur,
     setBackgroundBlur,
     clips,
-    projectWidth,
-    projectHeight,
-    fps,
     exporting,
     setExporting,
     setShowExportDialog,
@@ -271,29 +268,70 @@ export function Toolbar() {
   }
 
   async function doExtractAudio() {
-    if (!clips.length) {
-      setStatus("Timeline is empty");
+    const state = useEditorStore.getState();
+    const selected =
+      (state.selectedClipId &&
+        state.clips.find((c) => c.id === state.selectedClipId)) ||
+      state.clips.find(
+        (c) =>
+          !isTextClip(c) &&
+          c.hasAudio &&
+          state.playhead >= c.start &&
+          state.playhead < c.start + c.duration,
+      ) ||
+      state.clips.find((c) => !isTextClip(c) && c.hasAudio);
+
+    if (!selected || isTextClip(selected) || !selected.hasAudio) {
+      setStatus("Select a video/audio clip that has sound, then Extract Audio");
       return;
     }
-    const outputPath = await save({
-      filters: [{ name: "MP3 Audio", extensions: ["mp3"] }],
-      defaultPath: "novablend-audio.mp3",
-    });
-    if (!outputPath) return;
+    if (selected.isStill) {
+      setStatus("Freeze frames have no audio to extract");
+      return;
+    }
+
+    const src = selected.mediaPath || selected.previewPath;
+    if (!src) {
+      setStatus("No media path on this clip");
+      return;
+    }
+
     setExporting(true);
-    setStatus("Extracting audio…");
+    bumpProcessing(1);
+    setStatus("Extracting audio into Media Bin…");
     try {
-      const result = await extractAudio({
-        clips,
-        outputPath,
-        width: projectWidth,
-        height: projectHeight,
-        fps,
+      const audioPath = await extractMediaAudio({
+        path: src,
+        inPoint: selected.inPoint,
+        outPoint: selected.outPoint,
       });
-      setStatus(result.message);
+      const probe = await probeMedia(audioPath);
+      const id = uid();
+      const name = `${selected.name.replace(/\.[^.]+$/, "") || "Clip"} · audio`;
+      addMedia({
+        id,
+        name,
+        path: probe.path || audioPath,
+        previewPath: probe.path || audioPath,
+        duration: probe.duration || Math.max(0.05, selected.outPoint - selected.inPoint),
+        width: 0,
+        height: 0,
+        hasVideo: false,
+        hasAudio: true,
+        codec: probe.codec || "mp3",
+        fps: 0,
+        readyState: "ready",
+        statusMessage: "Ready",
+        progressPercent: 100,
+      });
+      const audioTrack =
+        state.tracks.find((t) => t.kind === "audio")?.index ?? 3;
+      addClipFromMedia(id, audioTrack);
+      setStatus(`Audio added to Media Bin + A1: ${name}`);
     } catch (e) {
       setStatus(`Extract failed: ${e}`);
     } finally {
+      bumpProcessing(-1);
       setExporting(false);
     }
   }

@@ -85,6 +85,8 @@ export function clipsToExportPayload(clips: TimelineClip[]) {
     outPoint: c.outPoint,
     effects: toBackendEffects(c.effects),
     text: c.trackKind === "text" || c.text ? toBackendText(c.text) : null,
+    isStill: !!c.isStill,
+    stillPath: c.stillPath || null,
   }));
 }
 
@@ -133,6 +135,19 @@ export async function extractAudio(args: {
   });
 }
 
+/** Extract audio from one media file into proxies/ (no Save dialog). */
+export async function extractMediaAudio(args: {
+  path: string;
+  inPoint: number;
+  outPoint: number;
+}) {
+  return invoke<string>("extract_media_audio", {
+    path: args.path,
+    inPoint: args.inPoint,
+    outPoint: args.outPoint,
+  });
+}
+
 export async function createPreviewProxy(path: string) {
   return invoke<string>("create_preview_proxy", { path });
 }
@@ -141,13 +156,18 @@ export async function previewThumbPath(previewPath: string) {
   return invoke<string | null>("preview_thumb_path", { previewPath });
 }
 
+export interface FreezeResult {
+  videoPath: string;
+  stillPath: string;
+}
+
 export async function createFreezeClip(args: {
   path: string;
   time: number;
   duration?: number;
   fps?: number;
 }) {
-  return invoke<string>("create_freeze_clip", {
+  return invoke<FreezeResult>("create_freeze_clip", {
     path: args.path,
     time: args.time,
     duration: args.duration ?? 2,

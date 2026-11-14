@@ -169,6 +169,17 @@ pub struct TimelineClip {
     pub effects: ClipEffects,
     #[serde(default)]
     pub text: Option<TextStyle>,
+    #[serde(default)]
+    pub is_still: bool,
+    #[serde(default)]
+    pub still_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreezeResult {
+    pub video_path: String,
+    pub still_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -619,17 +630,31 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
 
     let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into()];
 
-    // Unique media inputs (skip text / empty paths)
-    let mut input_map: Vec<String> = Vec::new();
+    // Unique media inputs (skip text / empty paths). Stills use looped jpg.
+    let mut input_map: Vec<(String, bool)> = Vec::new();
     for c in &clips {
-        if c.track_kind == "text" || c.media_path.trim().is_empty() {
+        if c.track_kind == "text" {
             continue;
         }
-        if !input_map.iter().any(|p| p == &c.media_path) {
-            input_map.push(c.media_path.clone());
+        let path = if c.is_still {
+            c.still_path
+                .clone()
+                .filter(|p| !p.trim().is_empty())
+                .unwrap_or_else(|| c.media_path.clone())
+        } else {
+            c.media_path.clone()
+        };
+        if path.trim().is_empty() {
+            continue;
+        }
+        if !input_map.iter().any(|(p, _)| p == &path) {
+            input_map.push((path, c.is_still));
         }
     }
-    for p in &input_map {
+    for (p, is_still) in &input_map {
+        if *is_still {
+            args.extend(["-loop".into(), "1".into(), "-t".into(), "600".into()]);
+        }
         args.push("-i".into());
         args.push(p.clone());
     }
@@ -639,7 +664,7 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
         let c = &clips[0];
         let idx = input_map
             .iter()
-            .position(|p| p == &c.media_path)
+            .position(|(p, _)| p == &c.media_path)
             .unwrap_or(0);
         let dur = (c.out_point - c.in_point).abs().max(0.05);
         args.extend([
@@ -673,22 +698,42 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
         if clip.track_kind == "text" {
             continue;
         }
+        let input_path = if clip.is_still {
+            clip.still_path
+                .clone()
+                .filter(|p| !p.trim().is_empty())
+                .unwrap_or_else(|| clip.media_path.clone())
+        } else {
+            clip.media_path.clone()
+        };
         let in_idx = input_map
             .iter()
-            .position(|p| p == &clip.media_path)
+            .position(|(p, _)| p == &input_path)
             .unwrap_or(0);
         let trim_dur = (clip.out_point - clip.in_point).abs().max(0.05);
         let speed = clip.effects.speed.clamp(0.1, 8.0);
-        let out_dur = trim_dur / speed;
+        let out_dur = if clip.is_still {
+            clip.duration.max(0.05)
+        } else {
+            trim_dur / speed
+        };
 
         if clip.track_kind == "audio" || clip.track_kind == "video" {
             // video branch for video tracks
             if clip.track_kind == "video" {
-                let mut chain = vec![
-                    format!("[{in_idx}:v]"),
-                    format!("trim=start={}:duration={}", clip.in_point, trim_dur),
-                    "setpts=PTS-STARTPTS".into(),
-                ];
+                let mut chain = if clip.is_still {
+                    vec![
+                        format!("[{in_idx}:v]"),
+                        format!("trim=duration={out_dur}"),
+                        "setpts=PTS-STARTPTS".into(),
+                    ]
+                } else {
+                    vec![
+                        format!("[{in_idx}:v]"),
+                        format!("trim=start={}:duration={}", clip.in_point, trim_dur),
+                        "setpts=PTS-STARTPTS".into(),
+                    ]
+                };
                 chain.extend(effect_filters(&clip.effects, out_dur));
                 // Fit into canvas while preserving aspect, then pad — used for main track
                 if clip.track_index == 0 {
@@ -766,8 +811,11 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
             }
 
             // Embedded audio from video clips + dedicated audio-track clips.
-            // Only when the source actually has an audio stream.
-            if clip.has_audio && (clip.track_kind == "audio" || clip.track_kind == "video") {
+            // Only when the source actually has an audio stream (not freeze stills).
+            if !clip.is_still
+                && clip.has_audio
+                && (clip.track_kind == "audio" || clip.track_kind == "video")
+            {
                 let mut a_chain = vec![
                     format!("[{in_idx}:a]"),
                     format!("atrim=start={}:duration={}", clip.in_point, trim_dur),
@@ -1438,14 +1486,14 @@ pub fn preview_thumb_path(preview_path: &str) -> Option<String> {
     }
 }
 
-/// Grab one frame at `time` and turn it into a short still video (CapCut-style freeze).
+/// Grab one frame at `time` and build a short preview video + still jpg (extendable).
 pub fn create_freeze_clip(
     app: &AppHandle,
     source: &str,
     time: f64,
     duration: f64,
     fps: f64,
-) -> Result<String, String> {
+) -> Result<FreezeResult, String> {
     let ffmpeg = resolve_ffmpeg_path(app)?;
     let dir = proxies_dir()?;
     let stamp = std::time::SystemTime::now()
@@ -1487,7 +1535,7 @@ pub fn create_freeze_clip(
         return Err("Could not capture freeze frame from this clip.".into());
     }
 
-    // 2) Loop still into short H.264 clip for preview + export
+    // 2) Short H.264 preview (browser); timeline length can exceed this via isStill
     let status2 = Command::new(&ffmpeg)
         .args([
             "-y",
@@ -1517,5 +1565,55 @@ pub fn create_freeze_clip(
         return Err("Could not build freeze clip.".into());
     }
 
+    Ok(FreezeResult {
+        video_path: out_str,
+        still_path: still_str,
+    })
+}
+
+/// Extract audio from a media file into the proxies folder (no Save dialog).
+pub fn extract_media_audio(
+    app: &AppHandle,
+    source: &str,
+    in_point: f64,
+    out_point: f64,
+) -> Result<String, String> {
+    let ffmpeg = resolve_ffmpeg_path(app)?;
+    let dir = proxies_dir()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let out = dir.join(format!("audio_{stamp}.mp3"));
+    let out_str = out.to_string_lossy().to_string();
+    let start = in_point.max(0.0);
+    let dur = (out_point - in_point).abs().max(0.05);
+    let ss = format!("{start:.3}");
+    let t = format!("{dur:.3}");
+
+    let status = Command::new(&ffmpeg)
+        .args([
+            "-y",
+            "-hide_banner",
+            "-ss",
+            &ss,
+            "-i",
+            source,
+            "-t",
+            &t,
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            &out_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map_err(|e| format!("extract audio spawn: {e}"))?;
+    if !status.success() || !out.exists() {
+        return Err("Could not extract audio from this clip.".into());
+    }
     Ok(out_str)
 }

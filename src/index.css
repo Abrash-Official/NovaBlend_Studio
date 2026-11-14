@@ -86,7 +86,7 @@ button {
 .app-shell {
   height: 100%;
   display: grid;
-  grid-template-rows: 40px minmax(0, 1fr) minmax(220px, 32vh) 24px;
+  grid-template-rows: 40px minmax(0, 1fr) minmax(260px, 36vh) 24px;
   background: var(--bg-0);
 }
 
@@ -236,11 +236,12 @@ button {
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.28);
+  overflow: hidden;
 }
 .clip-trim::after {
   content: "";
   width: 2px;
-  height: 14px;
+  height: 12px;
   border-radius: 1px;
   background: rgba(255, 255, 255, 0.85);
   box-shadow: 3px 0 0 rgba(255, 255, 255, 0.85);

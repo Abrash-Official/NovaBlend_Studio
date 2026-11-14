@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFreezeClip } from "../lib/api";
-import { isTextClip, TimelineClip } from "../types/editor";
+import { isStillClip, isTextClip, TimelineClip } from "../types/editor";
 import { useEditorStore } from "../store/editorStore";
 import {
   IconCopy,
@@ -28,10 +28,11 @@ type CtxMenu = {
   clipId: string;
 };
 
-const CLIP_H = 36;
-const LANE_GAP = 6;
+const CLIP_H = 32;
+const LANE_GAP = 4;
 const LANE_PAD = 6;
 const LANE_H = CLIP_H + LANE_GAP;
+const TRACK_MIN_H = LANE_PAD * 2 + CLIP_H; // pad + one clip, no overflow
 
 /** Pack overlapping clips into visual lanes (overlap allowed, stacked for readability). */
 function assignLanes(trackClips: TimelineClip[]): { lanes: Map<string, number>; laneCount: number } {
@@ -98,18 +99,39 @@ export function Timeline() {
 
   const duration = timelineDuration();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const trackRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [freezing, setFreezing] = useState(false);
+  const [dropTrackIndex, setDropTrackIndex] = useState<number | null>(null);
 
   const widthPx = useMemo(() => Math.max(800, duration * zoom), [duration, zoom]);
 
+  /** Hide empty T1/A1 so audio sits right under V1; always keep V1 visible. */
   const trackLayouts = useMemo(() => {
-    return tracks.map((track) => {
+    // Pack used layers: V1, then A1, then T1 (skip empty text/audio)
+    const kindOrder = { video: 0, audio: 1, text: 2 } as const;
+    const visible = tracks
+      .filter((track) => {
+        const hasClips = clips.some((c) => c.trackIndex === track.index);
+        if (track.kind === "video") return true; // always show V1
+        return hasClips;
+      })
+      .sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.index - b.index);
+
+    return visible.map((track) => {
       const trackClips = clips.filter((c) => c.trackIndex === track.index);
       const { lanes, laneCount } = assignLanes(trackClips);
-      const height = LANE_PAD * 2 + laneCount * LANE_H - LANE_GAP;
-      return { track, trackClips, lanes, laneCount, height: Math.max(52, height) };
+      const lanesUsed = Math.max(1, laneCount);
+      // Exact fit: top/bottom pad + clips + gaps between lanes only
+      const height = LANE_PAD * 2 + lanesUsed * CLIP_H + (lanesUsed - 1) * LANE_GAP;
+      return {
+        track,
+        trackClips,
+        lanes,
+        laneCount: lanesUsed,
+        height: Math.max(TRACK_MIN_H, height),
+      };
     });
   }, [tracks, clips]);
 
@@ -117,6 +139,14 @@ export function Timeline() {
     () => trackLayouts.reduce((sum, t) => sum + t.height, 0),
     [trackLayouts],
   );
+
+  function trackIndexAtClientY(clientY: number): number | null {
+    for (const [index, el] of trackRowRefs.current) {
+      const r = el.getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom) return index;
+    }
+    return null;
+  }
 
   function timeFromClientX(clientX: number) {
     const el = scrollRef.current;
@@ -137,13 +167,25 @@ export function Timeline() {
       if (!clip) return;
       const speed = Math.max(0.05, clip.effects.speed || 1);
       const media = state.media.find((m) => m.id === clip.mediaId);
-      const mediaDur = isTextClip(clip)
-        ? Math.max(drag.originOut + 120, 600)
-        : (media?.duration ?? Math.max(drag.originOut, 0.05));
+      const mediaDur =
+        isTextClip(clip) || isStillClip(clip)
+          ? Math.max(drag.originOut + 120, 600)
+          : (media?.duration ?? Math.max(drag.originOut, 0.05));
       const minLen = 0.05;
 
       if (drag.mode === "move") {
-        moveClip(drag.id, Math.max(0, drag.originStart + dTime));
+        const over = trackIndexAtClientY(e.clientY);
+        setDropTrackIndex(over);
+        const target =
+          over !== null
+            ? state.tracks.find((t) => t.index === over)
+            : undefined;
+        const canDrop = target && target.kind === clip.trackKind;
+        moveClip(
+          drag.id,
+          Math.max(0, drag.originStart + dTime),
+          canDrop ? target.index : undefined,
+        );
         return;
       }
 
@@ -174,7 +216,10 @@ export function Timeline() {
       });
     };
 
-    const onUp = () => setDrag(null);
+    const onUp = () => {
+      setDrag(null);
+      setDropTrackIndex(null);
+    };
 
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -259,7 +304,7 @@ export function Timeline() {
     bumpProcessing(1);
     setStatus("Creating freeze frame…");
     try {
-      const outPath = await createFreezeClip({
+      const freeze = await createFreezeClip({
         path: src,
         time: sourceTime,
         duration: 2,
@@ -273,9 +318,10 @@ export function Timeline() {
         media: {
           id: mediaId,
           name: `Freeze ${sourceTime.toFixed(2)}s`,
-          path: outPath,
-          previewPath: outPath,
-          duration: 2,
+          path: freeze.videoPath,
+          previewPath: freeze.videoPath,
+          stillPath: freeze.stillPath,
+          duration: 600,
           width: state.projectWidth,
           height: state.projectHeight,
           hasVideo: true,
@@ -283,7 +329,7 @@ export function Timeline() {
           codec: "h264",
           fps: state.fps || 30,
           readyState: "ready",
-          statusMessage: "Ready",
+          statusMessage: "Ready · still (drag to stretch)",
         },
       });
     } catch (err) {
@@ -305,7 +351,7 @@ export function Timeline() {
           Timeline
         </div>
         <div className="text-[10px] text-[var(--muted)]">
-          Right-click clip · Split / Reverse / Freeze / Duplicate / Delete
+          Empty tracks hide · drag clip up/down to change layer · right-click for tools
         </div>
         <div className="flex-1" />
         <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
@@ -350,16 +396,34 @@ export function Timeline() {
           {trackLayouts.map(({ track, trackClips, lanes, laneCount, height }) => (
             <div
               key={track.id}
-              className="flex border-b border-[var(--line)]"
-              style={{ height }}
+              ref={(el) => {
+                if (el) trackRowRefs.current.set(track.index, el);
+                else trackRowRefs.current.delete(track.index);
+              }}
+              className="flex shrink-0 overflow-hidden border-b border-[var(--line)]"
+              style={{
+                height,
+                minHeight: height,
+                maxHeight: height,
+                background:
+                  dropTrackIndex === track.index && drag?.mode === "move"
+                    ? "rgba(78, 161, 255, 0.08)"
+                    : undefined,
+              }}
             >
-              <div className="flex w-[88px] shrink-0 flex-col justify-center border-r border-[var(--line)] bg-[var(--bg-2)] px-2 text-xs text-[var(--muted)]">
-                <div>{track.name}</div>
+              <div className="flex w-[88px] shrink-0 flex-col justify-center overflow-hidden border-r border-[var(--line)] bg-[var(--bg-2)] px-2 text-xs text-[var(--muted)]">
+                <div className="truncate">{track.name}</div>
                 {laneCount > 1 && (
-                  <div className="text-[10px] text-[var(--warn)]">{laneCount} lanes</div>
+                  <div className="truncate text-[10px] text-[var(--warn)]">{laneCount} lanes</div>
+                )}
+                {trackClips.length === 0 && track.kind === "video" && (
+                  <div className="text-[10px] opacity-60">empty</div>
                 )}
               </div>
-              <div className="relative" style={{ width: widthPx, height }}>
+              <div
+                className="relative overflow-hidden"
+                style={{ width: widthPx, height, minHeight: height }}
+              >
                 {/* Lane guide lines */}
                 {laneCount > 1 &&
                   Array.from({ length: laneCount - 1 }).map((_, i) => (
@@ -388,7 +452,7 @@ export function Timeline() {
                   return (
                     <div
                       key={clip.id}
-                      className="absolute select-none text-[11px] text-white"
+                      className="absolute overflow-hidden select-none text-[11px] text-white"
                       style={{
                         left,
                         width,
@@ -403,7 +467,7 @@ export function Timeline() {
                         opacity: 0.96,
                         zIndex: selected || drag?.id === clip.id ? 8 : 1 + lane,
                       }}
-                      title={`${clip.name} · right-click for tools`}
+                      title={`${clip.name} · ${clip.duration.toFixed(1)}s · right-click for tools`}
                       onContextMenu={(e) => openClipMenu(e, clip.id)}
                     >
                       <div
@@ -414,13 +478,22 @@ export function Timeline() {
                       />
 
                       <div
-                        className="absolute bottom-0 top-0 cursor-grab overflow-hidden px-2 py-1 active:cursor-grabbing"
-                        style={{ left: handleW, right: handleW }}
+                        className="absolute bottom-0 top-0 cursor-grab overflow-hidden px-2 active:cursor-grabbing"
+                        style={{
+                          left: handleW,
+                          right: handleW,
+                          display: "flex",
+                          flexDirection: "column",
+                          justifyContent: "center",
+                          gap: 1,
+                        }}
                         onMouseDown={(e) => beginDrag(e, clip.id, "move", clip)}
                         onContextMenu={(e) => openClipMenu(e, clip.id)}
                       >
-                        <div className="truncate font-medium leading-tight">{clip.name}</div>
-                        <div className="truncate opacity-80">
+                        <div className="truncate font-medium leading-none">
+                          {clip.name}
+                        </div>
+                        <div className="truncate text-[10px] leading-none opacity-80">
                           {clip.duration.toFixed(1)}s · L{lane + 1}
                         </div>
                       </div>
