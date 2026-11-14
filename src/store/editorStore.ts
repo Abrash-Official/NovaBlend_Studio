@@ -68,6 +68,11 @@ interface EditorState {
   removeSelectedClip: () => void;
   splitSelectedAtPlayhead: () => void;
   trimSelected: (edge: "in" | "out", delta: number) => void;
+  trimClip: (
+    id: string,
+    edge: "in" | "out",
+    timelineDelta: number,
+  ) => void;
   moveClip: (id: string, newStart: number, newTrack?: number) => void;
   addKeyframe: (prop: "scale" | "opacity", time: number, value: number) => void;
   timelineDuration: () => number;
@@ -219,8 +224,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       clips: s.clips.map((c) => {
         if (c.id !== id) return c;
         const next = { ...c, ...patch };
-        if (patch.inPoint !== undefined || patch.outPoint !== undefined) {
-          next.duration = Math.max(0.05, next.outPoint - next.inPoint);
+        if (
+          patch.inPoint !== undefined ||
+          patch.outPoint !== undefined ||
+          patch.effects?.speed !== undefined
+        ) {
+          const speed = Math.max(0.05, next.effects.speed || 1);
+          next.duration = Math.max(0.05, (next.outPoint - next.inPoint) / speed);
         }
         return next;
       }),
@@ -258,20 +268,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       set({ status: "Playhead must be inside the selected clip to split" });
       return;
     }
+    const speed = Math.max(0.05, clip.effects.speed || 1);
     const local = playhead - clip.start;
-    const splitSrc = clip.inPoint + local * (clip.effects.speed || 1);
+    const splitSrc = clip.inPoint + local * speed;
     const left: TimelineClip = {
       ...clip,
       id: uid("clip"),
       outPoint: splitSrc,
-      duration: splitSrc - clip.inPoint,
+      duration: (splitSrc - clip.inPoint) / speed,
     };
     const right: TimelineClip = {
       ...clip,
       id: uid("clip"),
       start: playhead,
       inPoint: splitSrc,
-      duration: clip.outPoint - splitSrc,
+      duration: (clip.outPoint - splitSrc) / speed,
     };
     set((s) => ({
       clips: [...s.clips.filter((c) => c.id !== clip.id), left, right],
@@ -284,23 +295,37 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   trimSelected: (edge, delta) => {
     const id = get().selectedClipId;
     if (!id) return;
+    get().trimClip(id, edge, delta);
+  },
+
+  trimClip: (id, edge, timelineDelta) => {
     const clip = get().clips.find((c) => c.id === id);
     if (!clip) return;
+    const media = get().media.find((m) => m.id === clip.mediaId);
+    const mediaDur = media?.duration ?? Math.max(clip.outPoint, clip.inPoint + 0.05);
+    const speed = Math.max(0.05, clip.effects.speed || 1);
+    const sourceDelta = timelineDelta * speed;
+    const minLen = 0.05;
+
     if (edge === "in") {
-      const inPoint = Math.min(
-        clip.outPoint - 0.05,
-        Math.max(0, clip.inPoint + delta),
+      const nextIn = Math.min(
+        clip.outPoint - minLen,
+        Math.max(0, clip.inPoint + sourceDelta),
       );
+      const shifted = (nextIn - clip.inPoint) / speed;
       get().updateClip(id, {
-        inPoint,
-        start: clip.start + (inPoint - clip.inPoint),
-        duration: clip.outPoint - inPoint,
+        inPoint: nextIn,
+        start: Math.max(0, clip.start + shifted),
+        duration: (clip.outPoint - nextIn) / speed,
       });
     } else {
-      const outPoint = Math.max(clip.inPoint + 0.05, clip.outPoint + delta);
+      const nextOut = Math.min(
+        mediaDur,
+        Math.max(clip.inPoint + minLen, clip.outPoint + sourceDelta),
+      );
       get().updateClip(id, {
-        outPoint,
-        duration: outPoint - clip.inPoint,
+        outPoint: nextOut,
+        duration: (nextOut - clip.inPoint) / speed,
       });
     }
   },
