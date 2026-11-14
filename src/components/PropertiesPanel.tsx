@@ -8,6 +8,7 @@ import {
   TextAlign,
   TextStyle,
 } from "../types/editor";
+import { IconText, IconTrash } from "./Icons";
 
 type TextSectionId =
   | "content"
@@ -69,7 +70,8 @@ function ColorRow({
           type="color"
           value={hex}
           onChange={(e) => onChange(e.target.value)}
-          className="h-7 w-9 cursor-pointer rounded border border-[var(--line)] bg-transparent p-0"
+          className="h-7 w-9 cursor-pointer border border-[var(--line)] bg-transparent p-0"
+          style={{ borderRadius: "var(--radius)" }}
         />
         <input
           className="btn w-[88px] px-1 font-[var(--font-mono)] text-[11px]"
@@ -124,6 +126,7 @@ function TextPropertiesPanel({
   updateSelectedText,
   trimSelected,
   addTextClip,
+  removeSelectedClip,
 }: {
   clipName: string;
   duration: number;
@@ -131,6 +134,7 @@ function TextPropertiesPanel({
   updateSelectedText: (patch: Partial<TextStyle>) => void;
   trimSelected: (edge: "in" | "out", delta: number) => void;
   addTextClip: () => void;
+  removeSelectedClip: () => void;
 }) {
   // Only one section open at a time — keeps the panel calm
   const [openSection, setOpenSection] = useState<TextSectionId>("content");
@@ -150,17 +154,23 @@ function TextPropertiesPanel({
   const posHint = `Pos ${(text.x * 100).toFixed(0)}%,${(text.y * 100).toFixed(0)}% · ${text.rotation}°`;
 
   return (
-    <aside className="panel flex h-full flex-col overflow-hidden rounded-xl">
+    <aside className="panel flex h-full flex-col overflow-hidden">
       <div className="flex items-center gap-2 border-b border-[var(--line)] px-3 py-2">
-        <span className="text-tool-icon" aria-hidden>
-          T
-        </span>
+        <IconText size={14} />
         <div className="min-w-0 flex-1">
           <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
             Text Properties
           </div>
           <div className="truncate text-[11px] text-[var(--muted)]">{clipName}</div>
         </div>
+        <button
+          type="button"
+          className="btn btn-icon btn-danger h-7 w-7 p-0"
+          title="Delete text clip"
+          onClick={() => removeSelectedClip()}
+        >
+          <IconTrash size={13} />
+        </button>
       </div>
 
       <div className="flex-1 overflow-auto p-2">
@@ -373,7 +383,7 @@ function TextPropertiesPanel({
           onToggle={toggle}
         >
           <p className="mb-2 text-[11px] text-[var(--muted)]">
-            Tip: drag on the preview for placement; use the blue handle to rotate.
+            Tip: drag on the preview for placement; use the top handle to rotate.
           </p>
           <SliderRow
             label="Position X"
@@ -438,12 +448,10 @@ function TextPropertiesPanel({
         </TextSection>
 
         <button
-          className="btn btn-text-tool mt-2 w-full justify-center"
+          className="btn btn-icon btn-text-tool mt-2 w-full justify-center"
           onClick={() => addTextClip()}
         >
-          <span className="text-tool-icon" aria-hidden>
-            T
-          </span>
+          <IconText size={14} />
           Add Another Text
         </button>
       </div>
@@ -460,6 +468,7 @@ export function PropertiesPanel() {
   const trimSelected = useEditorStore((s) => s.trimSelected);
   const addKeyframe = useEditorStore((s) => s.addKeyframe);
   const addTextClip = useEditorStore((s) => s.addTextClip);
+  const removeSelectedClip = useEditorStore((s) => s.removeSelectedClip);
   const playhead = useEditorStore((s) => s.playhead);
 
   const clip = clips.find((c) => c.id === selectedClipId);
@@ -467,7 +476,7 @@ export function PropertiesPanel() {
 
   if (!clip || !fx) {
     return (
-      <aside className="panel flex h-full flex-col overflow-hidden rounded-xl">
+      <aside className="panel flex h-full flex-col overflow-hidden">
         <div className="border-b border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           Properties
         </div>
@@ -475,10 +484,8 @@ export function PropertiesPanel() {
           <div className="text-sm text-[var(--muted)]">
             Select a clip on the timeline, or add text to style titles on the preview.
           </div>
-          <button className="btn btn-text-tool w-full justify-center" onClick={() => addTextClip()}>
-            <span className="text-tool-icon" aria-hidden>
-              T
-            </span>
+          <button className="btn btn-icon btn-text-tool w-full justify-center" onClick={() => addTextClip()}>
+            <IconText size={14} />
             Add Text Overlay
           </button>
         </div>
@@ -497,24 +504,30 @@ export function PropertiesPanel() {
         updateSelectedText={updateSelectedText}
         trimSelected={trimSelected}
         addTextClip={addTextClip}
+        removeSelectedClip={removeSelectedClip}
       />
     );
   }
 
   return (
-    <aside className="panel flex h-full flex-col overflow-hidden rounded-xl">
-      <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+    <aside className="panel flex h-full flex-col overflow-hidden">
+      <div className="flex items-center gap-1 border-b border-[var(--line)] px-3 py-2">
+        <div className="min-w-0 flex-1 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           Properties
         </div>
         <button
-          className="btn btn-text-tool"
+          className="btn btn-icon btn-text-tool h-7 w-7 p-0"
           title="Add text overlay"
           onClick={() => addTextClip()}
         >
-          <span className="text-tool-icon" aria-hidden>
-            T
-          </span>
+          <IconText size={14} />
+        </button>
+        <button
+          className="btn btn-icon btn-danger h-7 w-7 p-0"
+          title="Delete selected clip"
+          onClick={() => removeSelectedClip()}
+        >
+          <IconTrash size={13} />
         </button>
       </div>
       <div className="flex-1 overflow-auto p-3">

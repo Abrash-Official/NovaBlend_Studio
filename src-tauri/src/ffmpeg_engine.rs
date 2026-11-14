@@ -1437,3 +1437,85 @@ pub fn preview_thumb_path(preview_path: &str) -> Option<String> {
         None
     }
 }
+
+/// Grab one frame at `time` and turn it into a short still video (CapCut-style freeze).
+pub fn create_freeze_clip(
+    app: &AppHandle,
+    source: &str,
+    time: f64,
+    duration: f64,
+    fps: f64,
+) -> Result<String, String> {
+    let ffmpeg = resolve_ffmpeg_path(app)?;
+    let dir = proxies_dir()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let still = dir.join(format!("freeze_{stamp}.jpg"));
+    let out = dir.join(format!("freeze_{stamp}.mp4"));
+    let t = time.max(0.0);
+    let dur = duration.clamp(0.2, 30.0);
+    let rate = if fps <= 0.0 { 30.0 } else { fps };
+
+    let still_str = still.to_string_lossy().to_string();
+    let out_str = out.to_string_lossy().to_string();
+    let ss = format!("{t:.3}");
+    let dur_s = format!("{dur:.3}");
+    let rate_s = format!("{rate}");
+
+    // 1) Still frame
+    let status = Command::new(&ffmpeg)
+        .args([
+            "-y",
+            "-hide_banner",
+            "-ss",
+            &ss,
+            "-i",
+            source,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            &still_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map_err(|e| format!("freeze still spawn: {e}"))?;
+    if !status.success() || !still.exists() {
+        return Err("Could not capture freeze frame from this clip.".into());
+    }
+
+    // 2) Loop still into short H.264 clip for preview + export
+    let status2 = Command::new(&ffmpeg)
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loop",
+            "1",
+            "-i",
+            &still_str,
+            "-t",
+            &dur_s,
+            "-r",
+            &rate_s,
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            &out_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map_err(|e| format!("freeze encode spawn: {e}"))?;
+    if !status2.success() || !out.exists() {
+        return Err("Could not build freeze clip.".into());
+    }
+
+    Ok(out_str)
+}

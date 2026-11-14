@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createFreezeClip } from "../lib/api";
 import { isTextClip, TimelineClip } from "../types/editor";
 import { useEditorStore } from "../store/editorStore";
+import {
+  IconCopy,
+  IconFreeze,
+  IconReverse,
+  IconSplit,
+  IconTrash,
+} from "./Icons";
 
 type DragMode = "move" | "trim-in" | "trim-out";
 
@@ -12,6 +20,12 @@ type DragState = {
   originIn: number;
   originOut: number;
   originDuration: number;
+};
+
+type CtxMenu = {
+  x: number;
+  y: number;
+  clipId: string;
 };
 
 const CLIP_H = 36;
@@ -72,11 +86,21 @@ export function Timeline() {
     updateClip,
     timelineDuration,
     setPlaying,
+    setStatus,
+    splitClipAtPlayhead,
+    duplicateClip,
+    toggleClipReverse,
+    removeClip,
+    insertFreezeMediaClip,
+    fps,
+    bumpProcessing,
   } = useEditorStore();
 
   const duration = timelineDuration();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [menu, setMenu] = useState<CtxMenu | null>(null);
+  const [freezing, setFreezing] = useState(false);
 
   const widthPx = useMemo(() => Math.max(800, duration * zoom), [duration, zoom]);
 
@@ -160,6 +184,20 @@ export function Timeline() {
     };
   }, [drag, zoom, moveClip, updateClip]);
 
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
   function beginDrag(
     e: React.MouseEvent,
     clipId: string,
@@ -173,6 +211,7 @@ export function Timeline() {
   ) {
     e.preventDefault();
     e.stopPropagation();
+    setMenu(null);
     setPlaying(false);
     selectClip(clipId);
     setDrag({
@@ -186,14 +225,87 @@ export function Timeline() {
     });
   }
 
+  function openClipMenu(e: React.MouseEvent, clipId: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    setPlaying(false);
+    selectClip(clipId);
+    setMenu({ x: e.clientX, y: e.clientY, clipId });
+  }
+
+  async function onFreeze(clipId: string) {
+    const state = useEditorStore.getState();
+    const clip = state.clips.find((c) => c.id === clipId);
+    if (!clip || isTextClip(clip)) {
+      setStatus("Freeze works on video clips");
+      return;
+    }
+    if (
+      state.playhead <= clip.start ||
+      state.playhead >= clip.start + clip.duration
+    ) {
+      setStatus("Move playhead onto the clip to freeze");
+      return;
+    }
+    const speed = Math.max(0.05, clip.effects.speed || 1);
+    const sourceTime =
+      clip.inPoint + (state.playhead - clip.start) * speed;
+    const src = clip.previewPath || clip.mediaPath;
+    if (!src) {
+      setStatus("No media path for freeze");
+      return;
+    }
+    setFreezing(true);
+    bumpProcessing(1);
+    setStatus("Creating freeze frame…");
+    try {
+      const outPath = await createFreezeClip({
+        path: src,
+        time: sourceTime,
+        duration: 2,
+        fps: state.fps || fps,
+      });
+      const mediaId = `media_${Math.random().toString(36).slice(2, 10)}`;
+      insertFreezeMediaClip({
+        afterClipId: clipId,
+        freezeDuration: 2,
+        sourceTime,
+        media: {
+          id: mediaId,
+          name: `Freeze ${sourceTime.toFixed(2)}s`,
+          path: outPath,
+          previewPath: outPath,
+          duration: 2,
+          width: state.projectWidth,
+          height: state.projectHeight,
+          hasVideo: true,
+          hasAudio: false,
+          codec: "h264",
+          fps: state.fps || 30,
+          readyState: "ready",
+          statusMessage: "Ready",
+        },
+      });
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      bumpProcessing(-1);
+      setFreezing(false);
+    }
+  }
+
+  const menuClip = menu
+    ? clips.find((c) => c.id === menu.clipId)
+    : undefined;
+
   return (
-    <section className="panel mx-3 mb-2 flex min-h-0 flex-col overflow-hidden rounded-md">
+    <section className="panel mx-3 mb-2 flex min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center gap-3 border-b border-[var(--line)] px-3 py-1.5">
         <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           Timeline
         </div>
         <div className="text-[10px] text-[var(--muted)]">
-          Overlaps stack on new lanes · drag edges to trim
+          Right-click clip · Split / Reverse / Freeze / Duplicate / Delete
         </div>
         <div className="flex-1" />
         <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
@@ -270,42 +382,42 @@ export function Timeline() {
                       : isTextClip(clip)
                         ? "var(--clip-t)"
                         : "var(--clip-v)";
-                  const handleW = Math.min(10, Math.max(6, width * 0.12));
+                  const handleW = 8;
                   const brightness = 1 + (lane % 3) * 0.08;
 
                   return (
                     <div
                       key={clip.id}
-                      className="absolute select-none rounded-md text-[11px] text-white shadow-sm"
+                      className="absolute select-none text-[11px] text-white"
                       style={{
                         left,
                         width,
                         top,
                         height: CLIP_H,
+                        borderRadius: 5,
                         background: laneTint(color, lane),
                         filter: `brightness(${brightness})`,
-                        outline: selected
-                          ? "2px solid var(--accent)"
-                          : "1px solid rgba(255,255,255,0.15)",
+                        boxShadow: selected
+                          ? "inset 0 0 0 1px rgba(255,255,255,0.7)"
+                          : "inset 0 0 0 1px rgba(255,255,255,0.12)",
                         opacity: 0.96,
                         zIndex: selected || drag?.id === clip.id ? 8 : 1 + lane,
                       }}
-                      title={`${clip.name} · lane ${lane + 1} — drag to move, edges to trim`}
+                      title={`${clip.name} · right-click for tools`}
+                      onContextMenu={(e) => openClipMenu(e, clip.id)}
                     >
                       <div
-                        className="absolute bottom-0 left-0 top-0 z-10 cursor-ew-resize rounded-l-md"
-                        style={{
-                          width: handleW,
-                          background:
-                            "linear-gradient(90deg, rgba(255,255,255,0.45), rgba(255,255,255,0.05))",
-                        }}
+                        className="clip-trim clip-trim-left"
                         onMouseDown={(e) => beginDrag(e, clip.id, "trim-in", clip)}
+                        onContextMenu={(e) => openClipMenu(e, clip.id)}
+                        title="Trim start"
                       />
 
                       <div
                         className="absolute bottom-0 top-0 cursor-grab overflow-hidden px-2 py-1 active:cursor-grabbing"
                         style={{ left: handleW, right: handleW }}
                         onMouseDown={(e) => beginDrag(e, clip.id, "move", clip)}
+                        onContextMenu={(e) => openClipMenu(e, clip.id)}
                       >
                         <div className="truncate font-medium leading-tight">{clip.name}</div>
                         <div className="truncate opacity-80">
@@ -314,13 +426,9 @@ export function Timeline() {
                       </div>
 
                       <div
-                        className="absolute bottom-0 right-0 top-0 z-10 cursor-ew-resize rounded-r-md"
-                        style={{
-                          width: handleW,
-                          background:
-                            "linear-gradient(270deg, rgba(255,255,255,0.45), rgba(255,255,255,0.05))",
-                        }}
+                        className="clip-trim clip-trim-right"
                         onMouseDown={(e) => beginDrag(e, clip.id, "trim-out", clip)}
+                        title="Trim end"
                       />
                     </div>
                   );
@@ -337,6 +445,77 @@ export function Timeline() {
           </div>
         </div>
       </div>
+
+      {menu && menuClip && (
+        <div
+          className="ctx-menu"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="ctx-item"
+            onClick={() => {
+              splitClipAtPlayhead(menu.clipId);
+              setMenu(null);
+            }}
+          >
+            <IconSplit size={14} />
+            Split at playhead
+          </button>
+          {!isTextClip(menuClip) && (
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                toggleClipReverse(menu.clipId);
+                setMenu(null);
+              }}
+            >
+              <IconReverse size={14} />
+              {menuClip.effects.reverse ? "Undo reverse" : "Reverse"}
+            </button>
+          )}
+          {menuClip.trackKind === "video" && !isTextClip(menuClip) && (
+            <button
+              type="button"
+              className="ctx-item"
+              disabled={freezing}
+              onClick={() => {
+                const id = menu.clipId;
+                setMenu(null);
+                void onFreeze(id);
+              }}
+            >
+              <IconFreeze size={14} />
+              {freezing ? "Freezing…" : "Freeze frame (2s)"}
+            </button>
+          )}
+          <button
+            type="button"
+            className="ctx-item"
+            onClick={() => {
+              duplicateClip(menu.clipId);
+              setMenu(null);
+            }}
+          >
+            <IconCopy size={14} />
+            Duplicate
+          </button>
+          <div className="ctx-sep" />
+          <button
+            type="button"
+            className="ctx-item danger"
+            onClick={() => {
+              removeClip(menu.clipId);
+              setMenu(null);
+            }}
+          >
+            <IconTrash size={14} />
+            Delete
+          </button>
+        </div>
+      )}
     </section>
   );
 }

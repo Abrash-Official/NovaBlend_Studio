@@ -85,7 +85,17 @@ interface EditorState {
   updateSelectedEffects: (patch: Partial<ClipEffects>) => void;
   updateSelectedText: (patch: Partial<TextStyle>) => void;
   removeSelectedClip: () => void;
+  removeClip: (id: string) => void;
   splitSelectedAtPlayhead: () => void;
+  splitClipAtPlayhead: (id: string) => void;
+  duplicateClip: (id: string) => void;
+  toggleClipReverse: (id: string) => void;
+  insertFreezeMediaClip: (args: {
+    afterClipId: string;
+    media: MediaItem;
+    freezeDuration: number;
+    sourceTime: number;
+  }) => void;
   trimSelected: (edge: "in" | "out", delta: number) => void;
   trimClip: (
     id: string,
@@ -336,21 +346,30 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   removeSelectedClip: () => {
     const id = get().selectedClipId;
     if (!id) return;
+    get().removeClip(id);
+  },
+
+  removeClip: (id) => {
     set((s) => ({
       clips: s.clips.filter((c) => c.id !== id),
-      selectedClipId: null,
+      selectedClipId: s.selectedClipId === id ? null : s.selectedClipId,
       status: "Clip removed",
       dirty: true,
     }));
   },
 
   splitSelectedAtPlayhead: () => {
-    const { selectedClipId, playhead, clips } = get();
-    if (!selectedClipId) return;
-    const clip = clips.find((c) => c.id === selectedClipId);
+    const id = get().selectedClipId;
+    if (!id) return;
+    get().splitClipAtPlayhead(id);
+  },
+
+  splitClipAtPlayhead: (id) => {
+    const { playhead, clips } = get();
+    const clip = clips.find((c) => c.id === id);
     if (!clip) return;
     if (playhead <= clip.start || playhead >= clip.start + clip.duration) {
-      set({ status: "Playhead must be inside the selected clip to split" });
+      set({ status: "Move playhead onto the clip to split" });
       return;
     }
     const speed = Math.max(0.05, clip.effects.speed || 1);
@@ -361,6 +380,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       id: uid("clip"),
       outPoint: splitSrc,
       duration: (splitSrc - clip.inPoint) / speed,
+      text: clip.text ? { ...clip.text } : undefined,
     };
     const right: TimelineClip = {
       ...clip,
@@ -368,6 +388,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       start: playhead,
       inPoint: splitSrc,
       duration: (clip.outPoint - splitSrc) / speed,
+      text: clip.text ? { ...clip.text } : undefined,
     };
     set((s) => ({
       clips: [...s.clips.filter((c) => c.id !== clip.id), left, right],
@@ -375,6 +396,101 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       status: "Clip split",
       dirty: true,
     }));
+  },
+
+  duplicateClip: (id) => {
+    const clip = get().clips.find((c) => c.id === id);
+    if (!clip) return;
+    const copy: TimelineClip = {
+      ...clip,
+      id: uid(isTextClip(clip) ? "text" : "clip"),
+      start: clip.start + clip.duration,
+      effects: { ...clip.effects, scaleKeyframes: [...clip.effects.scaleKeyframes], opacityKeyframes: [...clip.effects.opacityKeyframes] },
+      text: clip.text ? { ...clip.text } : undefined,
+    };
+    set((s) => ({
+      clips: [...s.clips, copy],
+      selectedClipId: copy.id,
+      status: `Duplicated “${clip.name}”`,
+      dirty: true,
+    }));
+  },
+
+  toggleClipReverse: (id) => {
+    const clip = get().clips.find((c) => c.id === id);
+    if (!clip || isTextClip(clip)) {
+      set({ status: "Reverse works on video/audio clips" });
+      return;
+    }
+    const next = !clip.effects.reverse;
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id === id ? { ...c, effects: { ...c.effects, reverse: next } } : c,
+      ),
+      selectedClipId: id,
+      status: next ? "Clip set to reverse" : "Reverse off",
+      dirty: true,
+    }));
+  },
+
+  insertFreezeMediaClip: ({ afterClipId, media, freezeDuration, sourceTime }) => {
+    const state = get();
+    const clip = state.clips.find((c) => c.id === afterClipId);
+    if (!clip) return;
+    const playhead = state.playhead;
+    if (playhead <= clip.start || playhead >= clip.start + clip.duration) {
+      set({ status: "Move playhead onto the clip to freeze" });
+      return;
+    }
+    const speed = Math.max(0.05, clip.effects.speed || 1);
+    const splitSrc = sourceTime;
+    const left: TimelineClip = {
+      ...clip,
+      id: uid("clip"),
+      outPoint: splitSrc,
+      duration: Math.max(0.05, (splitSrc - clip.inPoint) / speed),
+    };
+    const freeze: TimelineClip = {
+      id: uid("clip"),
+      mediaId: media.id,
+      mediaPath: media.path,
+      previewPath: media.previewPath || media.path,
+      name: `Freeze · ${freezeDuration.toFixed(1)}s`,
+      trackIndex: clip.trackIndex,
+      trackKind: "video",
+      hasAudio: false,
+      start: playhead,
+      duration: freezeDuration,
+      inPoint: 0,
+      outPoint: freezeDuration,
+      effects: DEFAULT_EFFECTS(),
+    };
+    const right: TimelineClip = {
+      ...clip,
+      id: uid("clip"),
+      start: playhead + freezeDuration,
+      inPoint: splitSrc,
+      duration: Math.max(0.05, (clip.outPoint - splitSrc) / speed),
+    };
+
+    set((s) => {
+      const shifted = s.clips
+        .filter((c) => c.id !== clip.id)
+        .map((c) => {
+          if (c.trackIndex !== clip.trackIndex) return c;
+          if (c.start >= playhead) {
+            return { ...c, start: c.start + freezeDuration };
+          }
+          return c;
+        });
+      return {
+        media: s.media.some((m) => m.id === media.id) ? s.media : [...s.media, media],
+        clips: [...shifted, left, freeze, right],
+        selectedClipId: freeze.id,
+        status: `Freeze frame added (${freezeDuration}s)`,
+        dirty: true,
+      };
+    });
   },
 
   trimSelected: (edge, delta) => {

@@ -141,6 +141,20 @@ export async function previewThumbPath(previewPath: string) {
   return invoke<string | null>("preview_thumb_path", { previewPath });
 }
 
+export async function createFreezeClip(args: {
+  path: string;
+  time: number;
+  duration?: number;
+  fps?: number;
+}) {
+  return invoke<string>("create_freeze_clip", {
+    path: args.path,
+    time: args.time,
+    duration: args.duration ?? 2,
+    fps: args.fps ?? 30,
+  });
+}
+
 export interface PreviewProgressEvent {
   sourcePath: string;
   percent: number;

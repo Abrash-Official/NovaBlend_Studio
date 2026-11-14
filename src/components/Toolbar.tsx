@@ -17,6 +17,14 @@ import {
   loadProjectSnapshot,
   saveProjectSnapshot,
 } from "../lib/projects";
+import {
+  IconAdd,
+  IconAudio,
+  IconImport,
+  IconSplit,
+  IconText,
+  IconTrash,
+} from "./Icons";
 
 function uid() {
   return `media_${Math.random().toString(36).slice(2, 10)}`;
@@ -307,7 +315,10 @@ export function Toolbar() {
         </div>
       </div>
 
-      <div className="flex items-center gap-0.5 rounded border border-[var(--line)] bg-[var(--bg-2)] p-0.5">
+      <div
+        className="flex items-center gap-0.5 border border-[var(--line)] bg-[var(--bg-2)] p-0.5"
+        style={{ borderRadius: "var(--radius)" }}
+      >
         <button className="btn btn-ghost" onClick={onNewProject}>
           New
         </button>
@@ -321,37 +332,53 @@ export function Toolbar() {
 
       <div className="mx-1 h-4 w-px bg-[var(--line)]" />
 
-      <button className="btn" onClick={importMedia} disabled={exporting}>
+      <button className="btn btn-icon" onClick={importMedia} disabled={exporting} title="Import media">
+        <IconImport size={14} />
         Import
       </button>
       <button
-        className="btn"
+        className="btn btn-icon"
+        title="Add ready media to timeline"
         onClick={() => {
           const media = useEditorStore.getState().media.find((m) => m.readyState === "ready");
           if (media) addClipFromMedia(media.id);
           else setStatus("No ready media — wait for processing");
         }}
       >
+        <IconAdd size={14} />
         Add
       </button>
       <button
-        className="btn btn-text-tool"
+        className="btn btn-icon btn-text-tool"
         title="Add text overlay"
         onClick={() => addTextClip()}
       >
-        <span className="text-tool-icon" aria-hidden>
-          T
-        </span>
+        <IconText size={14} />
         Text
       </button>
-      <button className="btn" onClick={splitSelectedAtPlayhead} disabled={!selectedClipId}>
-        Split
+      <button
+        className="btn btn-icon"
+        onClick={splitSelectedAtPlayhead}
+        disabled={!selectedClipId}
+        title="Split selected at playhead"
+      >
+        <IconSplit size={14} />
       </button>
-      <button className="btn btn-danger" onClick={removeSelectedClip} disabled={!selectedClipId}>
-        Del
+      <button
+        className="btn btn-icon btn-danger"
+        onClick={removeSelectedClip}
+        disabled={!selectedClipId}
+        title="Delete selected clip"
+      >
+        <IconTrash size={14} />
       </button>
-      <button className="btn" onClick={doExtractAudio} disabled={exporting}>
-        Extract Audio
+      <button
+        className="btn btn-icon"
+        onClick={doExtractAudio}
+        disabled={exporting}
+        title="Extract audio"
+      >
+        <IconAudio size={14} />
       </button>
 
       <div className="mx-1 h-4 w-px bg-[var(--line)]" />

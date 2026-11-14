@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEditorStore } from "../store/editorStore";
+import { IconTrash } from "./Icons";
 
 function formatEta(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "calc…";
@@ -16,7 +17,7 @@ export function MediaBin() {
   const processingCount = useEditorStore((s) => s.processingCount);
 
   return (
-    <aside className="panel flex h-full flex-col overflow-hidden rounded-md">
+    <aside className="panel flex h-full flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-[var(--line)] px-2 py-1.5">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
           Media Bin
@@ -27,7 +28,10 @@ export function MediaBin() {
       </div>
       <div className="flex-1 space-y-1.5 overflow-auto p-1.5">
         {media.length === 0 && (
-          <div className="rounded border border-dashed border-[var(--line)] p-3 text-center text-xs text-[var(--muted)]">
+          <div
+            className="border border-dashed border-[var(--line)] p-3 text-center text-xs text-[var(--muted)]"
+            style={{ borderRadius: "var(--radius)" }}
+          >
             Import media to begin.
           </div>
         )}
@@ -40,13 +44,14 @@ export function MediaBin() {
           return (
             <div
               key={item.id}
-              className={`flex w-full gap-2 rounded border p-1.5 ${
+              className={`flex w-full gap-2 border p-1.5 ${
                 busy
                   ? "border-[var(--warn)]/40 bg-[var(--warn)]/5"
                   : errored
                     ? "border-[var(--danger)]/40 bg-[var(--danger)]/5"
                     : "border-[var(--line)] bg-[var(--bg-2)]"
               }`}
+              style={{ borderRadius: "var(--radius)" }}
             >
               <button
                 className="flex min-w-0 flex-1 gap-2 text-left disabled:cursor-wait"
@@ -55,7 +60,10 @@ export function MediaBin() {
                 onClick={() => !errored && !busy && addClipFromMedia(item.id)}
                 title={busy ? "Wait until Ready" : "Click to add to timeline"}
               >
-                <div className="relative h-12 w-16 shrink-0 overflow-hidden rounded bg-black/40">
+                <div
+                  className="relative h-12 w-16 shrink-0 overflow-hidden bg-black/40"
+                  style={{ borderRadius: "var(--radius)" }}
+                >
                   {item.hasVideo && item.readyState === "ready" && thumb ? (
                     thumb.toLowerCase().endsWith(".jpg") ||
                     thumb.toLowerCase().endsWith(".jpeg") ||
@@ -106,7 +114,7 @@ export function MediaBin() {
                 </div>
               </button>
               <button
-                className="btn btn-danger h-7 self-start px-2 text-[11px]"
+                className="btn btn-icon btn-danger h-7 w-7 self-start p-0"
                 title="Remove from Media Bin"
                 disabled={busy}
                 onClick={(e) => {
@@ -114,7 +122,7 @@ export function MediaBin() {
                   removeMedia(item.id);
                 }}
               >
-                Del
+                <IconTrash size={13} />
               </button>
             </div>
           );

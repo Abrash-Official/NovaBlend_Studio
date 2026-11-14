@@ -135,7 +135,10 @@ export function ExportDialog() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
-      <div className="w-full max-w-md rounded-lg border border-[var(--line)] bg-[var(--bg-1)] shadow-xl">
+      <div
+        className="w-full max-w-md border border-[var(--line)] bg-[var(--bg-1)] shadow-xl"
+        style={{ borderRadius: "var(--radius)" }}
+      >
         <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3">
           <div>
             <div className="text-sm font-semibold">Export Video</div>
@@ -220,7 +223,10 @@ export function ExportDialog() {
           </div>
 
           {exporting && (
-            <div className="space-y-1.5 rounded border border-[var(--line)] bg-[var(--bg-2)] p-3">
+            <div
+              className="space-y-1.5 border border-[var(--line)] bg-[var(--bg-2)] p-3"
+              style={{ borderRadius: "var(--radius)" }}
+            >
               <div className="flex justify-between text-[11px]">
                 <span className="text-[var(--warn)]">{exportMessage || "Exporting…"}</span>
                 <span className="font-[var(--font-mono)]">

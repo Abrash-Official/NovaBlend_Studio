@@ -16,10 +16,37 @@
   --warn: #d6a34a;
   --font-ui: "Segoe UI", "Candara", sans-serif;
   --font-mono: "Cascadia Code", "Consolas", monospace;
+  --radius: 5px;
+  --select: rgba(255, 255, 255, 0.55);
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Kill default blue focus rings — keep a quiet neutral cue only */
+*:focus {
+  outline: none !important;
+}
+*:focus-visible {
+  outline: 1px solid var(--line) !important;
+  outline-offset: 1px;
+}
+textarea:focus,
+input:focus,
+select:focus {
+  border-color: #3a4a60 !important;
+  box-shadow: none !important;
+}
+
+/* Cap Tailwind rounded-* so nothing goes pill-shaped */
+.rounded,
+.rounded-sm,
+.rounded-md,
+.rounded-lg,
+.rounded-xl,
+.rounded-2xl {
+  border-radius: var(--radius) !important;
 }
 
 html,
@@ -70,13 +97,14 @@ button {
 .panel {
   background: var(--bg-1);
   border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 
 .btn {
   background: var(--bg-3);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 3px 8px;
   font-size: 12px;
   line-height: 1.2;
@@ -128,7 +156,7 @@ button {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: 3px;
+  border-radius: 4px;
   background: var(--clip-t);
   color: #fff;
   font-family: Georgia, "Times New Roman", serif;
@@ -153,24 +181,26 @@ button {
   transform-origin: center center;
   padding: 2px 6px;
   border: 1px solid transparent;
+  border-radius: var(--radius);
 }
 .preview-text-item:active {
   cursor: grabbing;
 }
 .preview-text-item.selected {
-  border-color: var(--accent);
-  outline: 1px dashed rgba(74, 158, 255, 0.55);
+  border-color: var(--select);
+  outline: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 .preview-text-rotate {
   position: absolute;
   left: 50%;
-  top: -22px;
-  width: 12px;
-  height: 12px;
-  margin-left: -6px;
+  top: -20px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
   border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #fff;
+  background: #d8dee8;
+  border: 1px solid rgba(0, 0, 0, 0.45);
   cursor: grab;
   pointer-events: auto;
 }
@@ -178,10 +208,10 @@ button {
   content: "";
   position: absolute;
   left: 50%;
-  top: 12px;
+  top: 10px;
   width: 1px;
-  height: 10px;
-  background: var(--accent);
+  height: 8px;
+  background: rgba(220, 227, 238, 0.7);
   transform: translateX(-50%);
 }
 
@@ -189,9 +219,94 @@ button {
   background: var(--bg-3);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 2px 6px;
   font-size: 12px;
+}
+
+/* Equal left/right trim grips on timeline clips */
+.clip-trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 10;
+  width: 8px;
+  cursor: ew-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+}
+.clip-trim::after {
+  content: "";
+  width: 2px;
+  height: 14px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 3px 0 0 rgba(255, 255, 255, 0.85);
+}
+.clip-trim-left {
+  left: 0;
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+.clip-trim-right {
+  right: 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.clip-trim:hover {
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 28px;
+  padding: 4px 7px;
+}
+.btn-icon.btn-danger {
+  color: #efb4bb;
+}
+
+.ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 190px;
+  padding: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.ctx-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.ctx-item:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+.ctx-item:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+.ctx-item.danger {
+  color: #efb4bb;
+}
+.ctx-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
 }
 
 .slider {
@@ -216,7 +331,7 @@ button {
 .prop-section {
   margin-bottom: 6px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--bg-2);
   overflow: hidden;
 }

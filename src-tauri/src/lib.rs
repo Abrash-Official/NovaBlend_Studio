@@ -65,6 +65,21 @@ fn split_hint(playhead: f64, clip_start: f64, clip_in: f64, clip_out: f64) -> Re
     Ok((split_src, split_src))
 }
 
+#[tauri::command]
+async fn create_freeze_clip(
+    app: AppHandle,
+    path: String,
+    time: f64,
+    duration: f64,
+    fps: f64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_engine::create_freeze_clip(&app, &path, time, duration, fps)
+    })
+    .await
+    .map_err(|e| format!("freeze task failed: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -80,7 +95,8 @@ pub fn run() {
             get_app_workdir,
             export_timeline,
             extract_audio,
-            split_hint
+            split_hint,
+            create_freeze_clip
         ])
         .run(tauri::generate_context!())
         .expect("error while running NovaBlend Studio");

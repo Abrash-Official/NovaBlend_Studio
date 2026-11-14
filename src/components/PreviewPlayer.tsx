@@ -454,7 +454,7 @@ export function PreviewPlayer() {
   }
 
   return (
-    <section className="panel flex h-full min-h-0 flex-col overflow-hidden rounded-md">
+    <section className="panel flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center justify-between border-b border-[var(--line)] px-3 py-2">
         <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           Preview
@@ -470,8 +470,11 @@ export function PreviewPlayer() {
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[#05070b] p-3">
         <div
           ref={frameRef}
-          className="relative flex h-full max-h-full w-full max-w-full items-center justify-center overflow-hidden rounded-lg border border-[var(--line)]"
-          style={{ aspectRatio: `${projectWidth / projectHeight}` }}
+          className="relative flex h-full max-h-full w-full max-w-full items-center justify-center overflow-hidden border border-[var(--line)]"
+          style={{
+            aspectRatio: `${projectWidth / projectHeight}`,
+            borderRadius: "var(--radius)",
+          }}
         >
           <canvas
             ref={canvasRef}
@@ -496,7 +499,7 @@ export function PreviewPlayer() {
                     e.stopPropagation();
                     selectClip(clip.id);
                   }}
-                  title="Drag to move · use blue handle to rotate"
+                  title="Drag to move · use top handle to rotate"
                 >
                   {selected && (
                     <div
