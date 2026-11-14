@@ -4,8 +4,11 @@ import {
   AspectRatioId,
   ClipEffects,
   DEFAULT_EFFECTS,
+  DEFAULT_TEXT,
+  isTextClip,
   MediaItem,
   ProjectSnapshot,
+  TextStyle,
   TimelineClip,
   Track,
 } from "../types/editor";
@@ -17,8 +20,22 @@ function uid(prefix = "id") {
 const defaultTracks: Track[] = [
   { id: "v1", kind: "video", name: "V1", index: 0 },
   { id: "v2", kind: "video", name: "V2 Overlay", index: 1 },
-  { id: "a1", kind: "audio", name: "A1", index: 2 },
+  { id: "t1", kind: "text", name: "T1 Text", index: 2 },
+  { id: "a1", kind: "audio", name: "A1", index: 3 },
 ];
+
+function normalizeClip(c: TimelineClip): TimelineClip {
+  if (!isTextClip(c) && c.trackKind !== "text") return c;
+  return {
+    ...c,
+    trackKind: "text",
+    hasAudio: false,
+    mediaId: c.mediaId || "",
+    mediaPath: c.mediaPath || "",
+    previewPath: c.previewPath || "",
+    text: { ...DEFAULT_TEXT(), ...(c.text || {}) },
+  };
+}
 
 interface EditorState {
   projectName: string;
@@ -63,8 +80,10 @@ interface EditorState {
   updateMedia: (id: string, patch: Partial<MediaItem>) => void;
   removeMedia: (id: string) => void;
   addClipFromMedia: (mediaId: string, trackIndex?: number) => void;
+  addTextClip: () => void;
   updateClip: (id: string, patch: Partial<TimelineClip>) => void;
   updateSelectedEffects: (patch: Partial<ClipEffects>) => void;
+  updateSelectedText: (patch: Partial<TextStyle>) => void;
   removeSelectedClip: () => void;
   splitSelectedAtPlayhead: () => void;
   trimSelected: (edge: "in" | "out", delta: number) => void;
@@ -158,7 +177,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   removeMedia: (id) =>
     set((s) => {
-      const nextClips = s.clips.filter((c) => c.mediaId !== id);
+      const nextClips = s.clips.filter(
+        (c) => isTextClip(c) || c.mediaId !== id,
+      );
       return {
         media: s.media.filter((m) => m.id !== id),
         clips: nextClips,
@@ -187,7 +208,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       trackIndex ??
       (media.hasVideo
         ? tracks.find((t) => t.kind === "video")?.index ?? 0
-        : tracks.find((t) => t.kind === "audio")?.index ?? 2);
+        : tracks.find((t) => t.kind === "audio")?.index ?? 3);
     const track = tracks.find((t) => t.index === preferred) ?? tracks[0];
     const sameTrack = get().clips.filter((c) => c.trackIndex === track.index);
     const start = sameTrack.reduce(
@@ -202,7 +223,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       previewPath: media.previewPath || media.path,
       name: media.name,
       trackIndex: track.index,
-      trackKind: track.kind,
+      trackKind: track.kind === "text" ? "video" : track.kind,
       hasAudio: media.hasAudio,
       start,
       duration: media.duration,
@@ -219,11 +240,55 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
   },
 
+  addTextClip: () => {
+    const tracks = get().tracks;
+    const track = tracks.find((t) => t.kind === "text") ?? {
+      id: "t1",
+      kind: "text" as const,
+      name: "T1 Text",
+      index: 2,
+    };
+    const playhead = get().playhead;
+    const duration = 5;
+    const text = DEFAULT_TEXT();
+    const clip: TimelineClip = {
+      id: uid("text"),
+      mediaId: "",
+      mediaPath: "",
+      previewPath: "",
+      name: text.content.slice(0, 24) || "Text",
+      trackIndex: track.index,
+      trackKind: "text",
+      hasAudio: false,
+      start: Math.max(0, playhead),
+      duration,
+      inPoint: 0,
+      outPoint: duration,
+      effects: DEFAULT_EFFECTS(),
+      text,
+    };
+    set((s) => ({
+      clips: [...s.clips, clip],
+      selectedClipId: clip.id,
+      tracks: s.tracks.some((t) => t.kind === "text")
+        ? s.tracks
+        : [...s.tracks.filter((t) => t.kind !== "audio"), track, ...s.tracks.filter((t) => t.kind === "audio")],
+      status: "Added text — drag on preview to position",
+      dirty: true,
+    }));
+  },
+
   updateClip: (id, patch) =>
     set((s) => ({
       clips: s.clips.map((c) => {
         if (c.id !== id) return c;
         const next = { ...c, ...patch };
+        if (patch.text) {
+          next.text = { ...(c.text || DEFAULT_TEXT()), ...patch.text };
+          if (patch.text.content !== undefined) {
+            next.name = patch.text.content.trim().slice(0, 28) || "Text";
+          }
+        }
         if (
           patch.inPoint !== undefined ||
           patch.outPoint !== undefined ||
@@ -244,6 +309,26 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       clips: s.clips.map((c) =>
         c.id === id ? { ...c, effects: { ...c.effects, ...patch } } : c,
       ),
+      dirty: true,
+    }));
+  },
+
+  updateSelectedText: (patch) => {
+    const id = get().selectedClipId;
+    if (!id) return;
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== id || !isTextClip(c)) return c;
+        const text = { ...(c.text || DEFAULT_TEXT()), ...patch };
+        return {
+          ...c,
+          text,
+          name:
+            patch.content !== undefined
+              ? patch.content.trim().slice(0, 28) || "Text"
+              : c.name,
+        };
+      }),
       dirty: true,
     }));
   },
@@ -302,7 +387,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const clip = get().clips.find((c) => c.id === id);
     if (!clip) return;
     const media = get().media.find((m) => m.id === clip.mediaId);
-    const mediaDur = media?.duration ?? Math.max(clip.outPoint, clip.inPoint + 0.05);
+    const mediaDur = isTextClip(clip)
+      ? Math.max(clip.outPoint + 120, 600)
+      : (media?.duration ?? Math.max(clip.outPoint, clip.inPoint + 0.05));
     const speed = Math.max(0.05, clip.effects.speed || 1);
     const sourceDelta = timelineDelta * speed;
     const minLen = 0.05;
@@ -338,11 +425,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           newTrack !== undefined
             ? s.tracks.find((t) => t.index === newTrack)
             : undefined;
+        // Text clips stay on the text track kind
+        if (isTextClip(c)) {
+          const textTrack = s.tracks.find((t) => t.kind === "text");
+          return {
+            ...c,
+            start: Math.max(0, newStart),
+            trackIndex: textTrack?.index ?? c.trackIndex,
+            trackKind: "text" as const,
+          };
+        }
         return {
           ...c,
           start: Math.max(0, newStart),
           trackIndex: newTrack ?? c.trackIndex,
-          trackKind: track?.kind ?? c.trackKind,
+          trackKind: track?.kind === "text" ? c.trackKind : (track?.kind ?? c.trackKind),
         };
       }),
       dirty: true,
@@ -387,6 +484,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       projectPath: null,
       dirty: false,
       media: [],
+      tracks: defaultTracks,
       clips: [],
       selectedClipId: null,
       playhead: 0,
@@ -412,7 +510,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         statusMessage: m.statusMessage || "Ready",
         previewPath: m.previewPath || m.path,
       })),
-      clips: snap.clips,
+      tracks: defaultTracks,
+      clips: snap.clips.map(normalizeClip).map((c) => {
+        if (!isTextClip(c)) return c;
+        const textTrack = defaultTracks.find((t) => t.kind === "text")!;
+        return { ...c, trackIndex: textTrack.index, trackKind: "text" as const };
+      }),
       selectedClipId: null,
       playhead: snap.playhead || 0,
       isPlaying: false,

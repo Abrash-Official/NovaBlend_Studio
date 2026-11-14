@@ -35,6 +35,7 @@ export function Toolbar() {
     addMedia,
     updateMedia,
     addClipFromMedia,
+    addTextClip,
     splitSelectedAtPlayhead,
     removeSelectedClip,
     aspect,
@@ -332,6 +333,16 @@ export function Toolbar() {
         }}
       >
         Add
+      </button>
+      <button
+        className="btn btn-text-tool"
+        title="Add text overlay"
+        onClick={() => addTextClip()}
+      >
+        <span className="text-tool-icon" aria-hidden>
+          T
+        </span>
+        Text
       </button>
       <button className="btn" onClick={splitSelectedAtPlayhead} disabled={!selectedClipId}>
         Split

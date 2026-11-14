@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { TimelineClip } from "../types/editor";
+import { isTextClip, TimelineClip } from "../types/editor";
 import { useEditorStore } from "../store/editorStore";
 
 type DragMode = "move" | "trim-in" | "trim-out";
@@ -113,7 +113,9 @@ export function Timeline() {
       if (!clip) return;
       const speed = Math.max(0.05, clip.effects.speed || 1);
       const media = state.media.find((m) => m.id === clip.mediaId);
-      const mediaDur = media?.duration ?? Math.max(drag.originOut, 0.05);
+      const mediaDur = isTextClip(clip)
+        ? Math.max(drag.originOut + 120, 600)
+        : (media?.duration ?? Math.max(drag.originOut, 0.05));
       const minLen = 0.05;
 
       if (drag.mode === "move") {
@@ -263,7 +265,11 @@ export function Timeline() {
                   const top = LANE_PAD + lane * LANE_H;
                   const selected = clip.id === selectedClipId;
                   const color =
-                    clip.trackKind === "audio" ? "var(--clip-a)" : "var(--clip-v)";
+                    clip.trackKind === "audio"
+                      ? "var(--clip-a)"
+                      : isTextClip(clip)
+                        ? "var(--clip-t)"
+                        : "var(--clip-v)";
                   const handleW = Math.min(10, Math.max(6, width * 0.12));
                   const brightness = 1 + (lane % 3) * 0.08;
 

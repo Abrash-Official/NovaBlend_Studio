@@ -1,5 +1,21 @@
+import { ReactNode, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
-import { EFFECT_PRESETS } from "../types/editor";
+import {
+  DEFAULT_TEXT,
+  EFFECT_PRESETS,
+  isTextClip,
+  TEXT_FONTS,
+  TextAlign,
+  TextStyle,
+} from "../types/editor";
+
+type TextSectionId =
+  | "content"
+  | "font"
+  | "color"
+  | "shadow"
+  | "position"
+  | "timing";
 
 function SliderRow({
   label,
@@ -35,13 +51,415 @@ function SliderRow({
   );
 }
 
+function ColorRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const hex = value.startsWith("#") ? value.slice(0, 7) : "#ffffff";
+  return (
+    <div className="mb-3 flex items-center justify-between gap-2">
+      <span className="text-xs text-[var(--muted)]">{label}</span>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={hex}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-7 w-9 cursor-pointer rounded border border-[var(--line)] bg-transparent p-0"
+        />
+        <input
+          className="btn w-[88px] px-1 font-[var(--font-mono)] text-[11px]"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TextSection({
+  id,
+  title,
+  hint,
+  open,
+  onToggle,
+  children,
+}: {
+  id: TextSectionId;
+  title: string;
+  hint: string;
+  open: boolean;
+  onToggle: (id: TextSectionId) => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`prop-section${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="prop-section-head"
+        onClick={() => onToggle(id)}
+        aria-expanded={open}
+      >
+        <div className="min-w-0 flex-1 text-left">
+          <div className="prop-section-title">{title}</div>
+          <div className="prop-section-hint">{hint}</div>
+        </div>
+        <span className="prop-section-chevron" aria-hidden>
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && <div className="prop-section-body">{children}</div>}
+    </div>
+  );
+}
+
+function TextPropertiesPanel({
+  clipName,
+  duration,
+  text,
+  updateSelectedText,
+  trimSelected,
+  addTextClip,
+}: {
+  clipName: string;
+  duration: number;
+  text: TextStyle;
+  updateSelectedText: (patch: Partial<TextStyle>) => void;
+  trimSelected: (edge: "in" | "out", delta: number) => void;
+  addTextClip: () => void;
+}) {
+  // Only one section open at a time — keeps the panel calm
+  const [openSection, setOpenSection] = useState<TextSectionId>("content");
+
+  function toggle(id: TextSectionId) {
+    setOpenSection(id);
+  }
+
+  const fontHint = `${text.fontFamily} · ${Math.round(text.fontSize)}px${text.bold ? " · Bold" : ""}${text.italic ? " · Italic" : ""}`;
+  const colorHint = `Fill · stroke ${text.strokeWidth > 0 ? "on" : "off"}`;
+  const shadowHint =
+    text.backgroundOpacity > 0.01
+      ? "Shadow + highlight box"
+      : text.shadowBlur > 0
+        ? "Shadow on"
+        : "Shadow / highlight";
+  const posHint = `Pos ${(text.x * 100).toFixed(0)}%,${(text.y * 100).toFixed(0)}% · ${text.rotation}°`;
+
+  return (
+    <aside className="panel flex h-full flex-col overflow-hidden rounded-xl">
+      <div className="flex items-center gap-2 border-b border-[var(--line)] px-3 py-2">
+        <span className="text-tool-icon" aria-hidden>
+          T
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+            Text Properties
+          </div>
+          <div className="truncate text-[11px] text-[var(--muted)]">{clipName}</div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto p-2">
+        <p className="prop-guide mb-2 px-1">
+          Open one section at a time. Drag text on the preview to place it.
+        </p>
+
+        <TextSection
+          id="content"
+          title="1 · Content"
+          hint="What the text says · emoji"
+          open={openSection === "content"}
+          onToggle={toggle}
+        >
+          <textarea
+            className="btn mb-2 min-h-[72px] w-full resize-y text-left"
+            value={text.content}
+            onChange={(e) => updateSelectedText({ content: e.target.value })}
+            placeholder="Type your text…"
+          />
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--muted)]">
+            Quick emoji
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {["🔥", "✨", "❤️", "😂", "🎉", "⭐", "👏", "💯"].map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                className="btn px-2 text-sm"
+                title="Insert emoji"
+                onClick={() =>
+                  updateSelectedText({ content: `${text.content}${emoji}` })
+                }
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </TextSection>
+
+        <TextSection
+          id="font"
+          title="2 · Font & style"
+          hint={fontHint}
+          open={openSection === "font"}
+          onToggle={toggle}
+        >
+          <div className="field-label">Font family</div>
+          <select
+            className="btn mb-3 w-full"
+            value={text.fontFamily}
+            onChange={(e) => updateSelectedText({ fontFamily: e.target.value })}
+          >
+            {TEXT_FONTS.map((f) => (
+              <option key={f} value={f} style={{ fontFamily: f }}>
+                {f}
+              </option>
+            ))}
+          </select>
+
+          <SliderRow
+            label="Size"
+            min={12}
+            max={220}
+            step={1}
+            value={text.fontSize}
+            onChange={(fontSize) => updateSelectedText({ fontSize })}
+          />
+
+          <div className="mb-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              className={`btn ${text.bold ? "btn-accent" : ""}`}
+              onClick={() => updateSelectedText({ bold: !text.bold })}
+            >
+              Bold
+            </button>
+            <button
+              type="button"
+              className={`btn italic ${text.italic ? "btn-accent" : ""}`}
+              onClick={() => updateSelectedText({ italic: !text.italic })}
+            >
+              Italic
+            </button>
+          </div>
+
+          <div className="field-label">Align</div>
+          <div className="mb-3 flex gap-1">
+            {(["left", "center", "right"] as TextAlign[]).map((a) => (
+              <button
+                key={a}
+                type="button"
+                className={`btn flex-1 ${text.align === a ? "btn-accent" : ""}`}
+                onClick={() => updateSelectedText({ align: a })}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+
+          <SliderRow
+            label="Letter spacing"
+            min={-4}
+            max={40}
+            step={0.5}
+            value={text.letterSpacing}
+            onChange={(letterSpacing) => updateSelectedText({ letterSpacing })}
+          />
+          <SliderRow
+            label="Line height"
+            min={0.8}
+            max={2.5}
+            step={0.05}
+            value={text.lineHeight}
+            onChange={(lineHeight) => updateSelectedText({ lineHeight })}
+          />
+        </TextSection>
+
+        <TextSection
+          id="color"
+          title="3 · Color & outline"
+          hint={colorHint}
+          open={openSection === "color"}
+          onToggle={toggle}
+        >
+          <ColorRow
+            label="Fill color"
+            value={text.color}
+            onChange={(color) => updateSelectedText({ color })}
+          />
+          <ColorRow
+            label="Outline color"
+            value={text.strokeColor}
+            onChange={(strokeColor) => updateSelectedText({ strokeColor })}
+          />
+          <SliderRow
+            label="Outline width"
+            min={0}
+            max={24}
+            step={0.5}
+            value={text.strokeWidth}
+            onChange={(strokeWidth) => updateSelectedText({ strokeWidth })}
+          />
+        </TextSection>
+
+        <TextSection
+          id="shadow"
+          title="4 · Shadow & highlight"
+          hint={shadowHint}
+          open={openSection === "shadow"}
+          onToggle={toggle}
+        >
+          <div className="field-label">Drop shadow</div>
+          <ColorRow
+            label="Shadow color"
+            value={text.shadowColor.startsWith("#") ? text.shadowColor : "#000000"}
+            onChange={(shadowColor) => updateSelectedText({ shadowColor })}
+          />
+          <SliderRow
+            label="Blur"
+            min={0}
+            max={40}
+            step={1}
+            value={text.shadowBlur}
+            onChange={(shadowBlur) => updateSelectedText({ shadowBlur })}
+          />
+          <SliderRow
+            label="Offset X"
+            min={-30}
+            max={30}
+            step={1}
+            value={text.shadowOffsetX}
+            onChange={(shadowOffsetX) => updateSelectedText({ shadowOffsetX })}
+          />
+          <SliderRow
+            label="Offset Y"
+            min={-30}
+            max={30}
+            step={1}
+            value={text.shadowOffsetY}
+            onChange={(shadowOffsetY) => updateSelectedText({ shadowOffsetY })}
+          />
+
+          <div className="field-label mt-1">Highlight box</div>
+          <p className="mb-2 text-[11px] text-[var(--muted)]">
+            Soft background behind the text — raise opacity to show it.
+          </p>
+          <ColorRow
+            label="Box color"
+            value={text.backgroundColor}
+            onChange={(backgroundColor) => updateSelectedText({ backgroundColor })}
+          />
+          <SliderRow
+            label="Box opacity"
+            min={0}
+            max={1}
+            step={0.01}
+            value={text.backgroundOpacity}
+            onChange={(backgroundOpacity) =>
+              updateSelectedText({ backgroundOpacity })
+            }
+          />
+        </TextSection>
+
+        <TextSection
+          id="position"
+          title="5 · Position & look"
+          hint={posHint}
+          open={openSection === "position"}
+          onToggle={toggle}
+        >
+          <p className="mb-2 text-[11px] text-[var(--muted)]">
+            Tip: drag on the preview for placement; use the blue handle to rotate.
+          </p>
+          <SliderRow
+            label="Position X"
+            min={0}
+            max={1}
+            step={0.01}
+            value={text.x}
+            onChange={(x) => updateSelectedText({ x })}
+          />
+          <SliderRow
+            label="Position Y"
+            min={0}
+            max={1}
+            step={0.01}
+            value={text.y}
+            onChange={(y) => updateSelectedText({ y })}
+          />
+          <SliderRow
+            label="Rotation"
+            min={-180}
+            max={180}
+            step={1}
+            value={text.rotation}
+            onChange={(rotation) => updateSelectedText({ rotation })}
+          />
+          <SliderRow
+            label="Opacity"
+            min={0}
+            max={1}
+            step={0.01}
+            value={text.opacity}
+            onChange={(opacity) => updateSelectedText({ opacity })}
+          />
+        </TextSection>
+
+        <TextSection
+          id="timing"
+          title="6 · Timing"
+          hint={`${duration.toFixed(1)}s on timeline`}
+          open={openSection === "timing"}
+          onToggle={toggle}
+        >
+          <div className="mb-3 flex gap-2">
+            <button className="btn flex-1" onClick={() => trimSelected("in", 0.1)}>
+              In +0.1
+            </button>
+            <button className="btn flex-1" onClick={() => trimSelected("in", -0.1)}>
+              In −0.1
+            </button>
+          </div>
+          <div className="mb-2 flex gap-2">
+            <button className="btn flex-1" onClick={() => trimSelected("out", 0.1)}>
+              Out +0.1
+            </button>
+            <button className="btn flex-1" onClick={() => trimSelected("out", -0.1)}>
+              Out −0.1
+            </button>
+          </div>
+          <div className="text-[11px] text-[var(--muted)]">
+            Or drag clip edges on the timeline.
+          </div>
+        </TextSection>
+
+        <button
+          className="btn btn-text-tool mt-2 w-full justify-center"
+          onClick={() => addTextClip()}
+        >
+          <span className="text-tool-icon" aria-hidden>
+            T
+          </span>
+          Add Another Text
+        </button>
+      </div>
+    </aside>
+  );
+}
+
 export function PropertiesPanel() {
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
   const clips = useEditorStore((s) => s.clips);
   const updateSelectedEffects = useEditorStore((s) => s.updateSelectedEffects);
+  const updateSelectedText = useEditorStore((s) => s.updateSelectedText);
   const updateClip = useEditorStore((s) => s.updateClip);
   const trimSelected = useEditorStore((s) => s.trimSelected);
   const addKeyframe = useEditorStore((s) => s.addKeyframe);
+  const addTextClip = useEditorStore((s) => s.addTextClip);
   const playhead = useEditorStore((s) => s.playhead);
 
   const clip = clips.find((c) => c.id === selectedClipId);
@@ -53,8 +471,16 @@ export function PropertiesPanel() {
         <div className="border-b border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           Properties
         </div>
-        <div className="p-4 text-sm text-[var(--muted)]">
-          Select a clip on the timeline to edit properties, filters, and keyframes.
+        <div className="flex flex-1 flex-col gap-3 p-4">
+          <div className="text-sm text-[var(--muted)]">
+            Select a clip on the timeline, or add text to style titles on the preview.
+          </div>
+          <button className="btn btn-text-tool w-full justify-center" onClick={() => addTextClip()}>
+            <span className="text-tool-icon" aria-hidden>
+              T
+            </span>
+            Add Text Overlay
+          </button>
         </div>
       </aside>
     );
@@ -62,10 +488,34 @@ export function PropertiesPanel() {
 
   const localTime = Math.max(0, playhead - clip.start);
 
+  if (isTextClip(clip)) {
+    return (
+      <TextPropertiesPanel
+        clipName={clip.name}
+        duration={clip.duration}
+        text={clip.text || DEFAULT_TEXT()}
+        updateSelectedText={updateSelectedText}
+        trimSelected={trimSelected}
+        addTextClip={addTextClip}
+      />
+    );
+  }
+
   return (
     <aside className="panel flex h-full flex-col overflow-hidden rounded-xl">
-      <div className="border-b border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-        Properties
+      <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
+        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+          Properties
+        </div>
+        <button
+          className="btn btn-text-tool"
+          title="Add text overlay"
+          onClick={() => addTextClip()}
+        >
+          <span className="text-tool-icon" aria-hidden>
+            T
+          </span>
+        </button>
       </div>
       <div className="flex-1 overflow-auto p-3">
         <div className="mb-3 truncate text-sm font-semibold">{clip.name}</div>

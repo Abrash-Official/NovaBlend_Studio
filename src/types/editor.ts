@@ -1,12 +1,42 @@
-export type TrackKind = "video" | "audio";
+export type TrackKind = "video" | "audio" | "text";
 
 export type AspectRatioId = "16:9" | "9:16" | "1:1" | "4:5" | "21:9";
 
 export type MediaReadyState = "processing" | "ready" | "error";
 
+export type TextAlign = "left" | "center" | "right";
+
 export interface Keyframe {
   time: number;
   value: number;
+}
+
+/** On-screen title / caption style (normalized position 0–1). */
+export interface TextStyle {
+  content: string;
+  fontFamily: string;
+  /** Font size in pixels at project resolution */
+  fontSize: number;
+  color: string;
+  strokeColor: string;
+  strokeWidth: number;
+  shadowColor: string;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  backgroundColor: string;
+  backgroundOpacity: number;
+  /** Center X as fraction of frame width */
+  x: number;
+  /** Center Y as fraction of frame height */
+  y: number;
+  rotation: number;
+  align: TextAlign;
+  bold: boolean;
+  italic: boolean;
+  letterSpacing: number;
+  lineHeight: number;
+  opacity: number;
 }
 
 export interface ClipEffects {
@@ -71,6 +101,8 @@ export interface TimelineClip {
   inPoint: number;
   outPoint: number;
   effects: ClipEffects;
+  /** Present when trackKind === "text" */
+  text?: TextStyle;
 }
 
 export type ExportFps = 25 | 30 | 60;
@@ -122,6 +154,47 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   scaleKeyframes: [],
   opacityKeyframes: [],
 });
+
+export const DEFAULT_TEXT = (): TextStyle => ({
+  content: "Your text here",
+  fontFamily: "Segoe UI",
+  fontSize: 72,
+  color: "#ffffff",
+  strokeColor: "#000000",
+  strokeWidth: 0,
+  shadowColor: "rgba(0,0,0,0.65)",
+  shadowBlur: 10,
+  shadowOffsetX: 2,
+  shadowOffsetY: 3,
+  backgroundColor: "#000000",
+  backgroundOpacity: 0,
+  x: 0.5,
+  y: 0.5,
+  rotation: 0,
+  align: "center",
+  bold: false,
+  italic: false,
+  letterSpacing: 0,
+  lineHeight: 1.25,
+  opacity: 1,
+});
+
+export const TEXT_FONTS = [
+  "Segoe UI",
+  "Arial",
+  "Georgia",
+  "Impact",
+  "Verdana",
+  "Trebuchet MS",
+  "Times New Roman",
+  "Consolas",
+  "Comic Sans MS",
+  "Courier New",
+] as const;
+
+export function isTextClip(clip: TimelineClip): boolean {
+  return clip.trackKind === "text" || !!clip.text;
+}
 
 export const ASPECT_PRESETS: Record<
   AspectRatioId,

@@ -168,4 +168,3 @@ Those folders are gitignored.
 ## License / notes
 
 This project is provided as a personal/portfolio desktop video editor.  
-Large binaries (`.exe`, FFmpeg, installers, `target/`) are intentionally **not** pushed to GitHub.

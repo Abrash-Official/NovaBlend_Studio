@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ClipEffects, TimelineClip } from "../types/editor";
+import { ClipEffects, DEFAULT_TEXT, TimelineClip, TextStyle } from "../types/editor";
 
 export interface MediaProbe {
   path: string;
@@ -45,10 +45,37 @@ function toBackendEffects(fx: ClipEffects) {
   };
 }
 
+function toBackendText(text?: TextStyle) {
+  const t = { ...DEFAULT_TEXT(), ...(text || {}) };
+  return {
+    content: t.content,
+    fontFamily: t.fontFamily,
+    fontSize: t.fontSize,
+    color: t.color,
+    strokeColor: t.strokeColor,
+    strokeWidth: t.strokeWidth,
+    shadowColor: t.shadowColor,
+    shadowBlur: t.shadowBlur,
+    shadowOffsetX: t.shadowOffsetX,
+    shadowOffsetY: t.shadowOffsetY,
+    backgroundColor: t.backgroundColor,
+    backgroundOpacity: t.backgroundOpacity,
+    x: t.x,
+    y: t.y,
+    rotation: t.rotation,
+    align: t.align,
+    bold: t.bold,
+    italic: t.italic,
+    letterSpacing: t.letterSpacing,
+    lineHeight: t.lineHeight,
+    opacity: t.opacity,
+  };
+}
+
 export function clipsToExportPayload(clips: TimelineClip[]) {
   return clips.map((c) => ({
     id: c.id,
-    mediaPath: c.mediaPath,
+    mediaPath: c.mediaPath || "",
     trackIndex: c.trackIndex,
     trackKind: c.trackKind,
     hasAudio: c.hasAudio,
@@ -57,6 +84,7 @@ export function clipsToExportPayload(clips: TimelineClip[]) {
     inPoint: c.inPoint,
     outPoint: c.outPoint,
     effects: toBackendEffects(c.effects),
+    text: c.trackKind === "text" || c.text ? toBackendText(c.text) : null,
   }));
 }
 

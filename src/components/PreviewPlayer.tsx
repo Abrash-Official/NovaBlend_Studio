@@ -1,6 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
+import { DEFAULT_TEXT, isTextClip, TextStyle, TimelineClip } from "../types/editor";
 
 function lerp(
   keys: { time: number; value: number }[],
@@ -37,10 +38,86 @@ function contentEnd() {
   );
 }
 
+function textCss(text: TextStyle, frameH: number, projectH: number): CSSProperties {
+  const scale = frameH > 0 ? frameH / Math.max(1, projectH) : 1;
+  const fontPx = Math.max(8, text.fontSize * scale);
+  const stroke = text.strokeWidth * scale;
+  const shadowX = text.shadowOffsetX * scale;
+  const shadowY = text.shadowOffsetY * scale;
+  const shadowBlur = text.shadowBlur * scale;
+  const bg =
+    text.backgroundOpacity > 0.01
+      ? hexToRgba(text.backgroundColor, text.backgroundOpacity)
+      : "transparent";
+
+  return {
+    left: `${text.x * 100}%`,
+    top: `${text.y * 100}%`,
+    transform: `translate(-50%, -50%) rotate(${text.rotation}deg)`,
+    fontFamily: `"${text.fontFamily}", "Segoe UI Emoji", "Apple Color Emoji", sans-serif`,
+    fontSize: `${fontPx}px`,
+    fontWeight: text.bold ? 700 : 400,
+    fontStyle: text.italic ? "italic" : "normal",
+    color: text.color,
+    opacity: text.opacity,
+    textAlign: text.align,
+    letterSpacing: `${text.letterSpacing * scale}px`,
+    lineHeight: text.lineHeight,
+    background: bg,
+    borderRadius: bg !== "transparent" ? 6 : 0,
+    WebkitTextStroke:
+      stroke > 0 ? `${stroke}px ${text.strokeColor}` : undefined,
+    textShadow:
+      text.shadowBlur > 0 || text.shadowOffsetX || text.shadowOffsetY
+        ? `${shadowX}px ${shadowY}px ${shadowBlur}px ${text.shadowColor}`
+        : "none",
+    paintOrder: "stroke fill",
+  };
+}
+
+function hexToRgba(color: string, alpha: number) {
+  if (color.startsWith("rgba") || color.startsWith("rgb")) {
+    return color;
+  }
+  const hex = color.replace("#", "");
+  const full =
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : hex.padEnd(6, "0").slice(0, 6);
+  const r = parseInt(full.slice(0, 2), 16) || 0;
+  const g = parseInt(full.slice(2, 4), 16) || 0;
+  const b = parseInt(full.slice(4, 6), 16) || 0;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+type TextDrag =
+  | {
+      mode: "move";
+      id: string;
+      originX: number;
+      originY: number;
+      startTX: number;
+      startTY: number;
+    }
+  | {
+      mode: "rotate";
+      id: string;
+      centerX: number;
+      centerY: number;
+      startAngle: number;
+      originRotation: number;
+    };
+
 export function PreviewPlayer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+  const [textDrag, setTextDrag] = useState<TextDrag | null>(null);
   const {
     clips,
     playhead,
@@ -49,6 +126,9 @@ export function PreviewPlayer() {
     setPlaying,
     projectWidth,
     projectHeight,
+    selectedClipId,
+    selectClip,
+    updateClip,
   } = useEditorStore();
 
   const activeVideoClips = useMemo(
@@ -64,7 +144,32 @@ export function PreviewPlayer() {
     [clips, playhead],
   );
 
+  const activeTextClips = useMemo(
+    () =>
+      clips
+        .filter(
+          (c) =>
+            isTextClip(c) &&
+            playhead >= c.start &&
+            playhead < c.start + c.duration,
+        )
+        .sort((a, b) => a.trackIndex - b.trackIndex),
+    [clips, playhead],
+  );
+
   const dur = contentEnd();
+
+  useEffect(() => {
+    const el = frameRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const cr = entries[0]?.contentRect;
+      if (!cr) return;
+      setFrameSize({ w: cr.width, h: cr.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -79,7 +184,6 @@ export function PreviewPlayer() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Drive playhead from wall clock, stop at last clip end (no padded black tail)
   useEffect(() => {
     if (!isPlaying) return;
     let raf = 0;
@@ -101,6 +205,51 @@ export function PreviewPlayer() {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [isPlaying]);
+
+  useEffect(() => {
+    if (!textDrag) return;
+    const onMove = (e: MouseEvent) => {
+      const frame = frameRef.current;
+      if (!frame) return;
+      const rect = frame.getBoundingClientRect();
+      if (textDrag.mode === "move") {
+        const dx = (e.clientX - textDrag.originX) / Math.max(1, rect.width);
+        const dy = (e.clientY - textDrag.originY) / Math.max(1, rect.height);
+        updateClip(textDrag.id, {
+          text: {
+            ...(useEditorStore.getState().clips.find((c) => c.id === textDrag.id)
+              ?.text || DEFAULT_TEXT()),
+            x: Math.min(1, Math.max(0, textDrag.startTX + dx)),
+            y: Math.min(1, Math.max(0, textDrag.startTY + dy)),
+          },
+        });
+        return;
+      }
+      const angle = Math.atan2(
+        e.clientY - textDrag.centerY,
+        e.clientX - textDrag.centerX,
+      );
+      let deg =
+        textDrag.originRotation +
+        ((angle - textDrag.startAngle) * 180) / Math.PI;
+      while (deg > 180) deg -= 360;
+      while (deg < -180) deg += 360;
+      updateClip(textDrag.id, {
+        text: {
+          ...(useEditorStore.getState().clips.find((c) => c.id === textDrag.id)
+            ?.text || DEFAULT_TEXT()),
+          rotation: Math.round(deg),
+        },
+      });
+    };
+    const onUp = () => setTextDrag(null);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [textDrag, updateClip]);
 
   useEffect(() => {
     let raf = 0;
@@ -180,8 +329,6 @@ export function PreviewPlayer() {
               ),
             );
 
-            // While playing, avoid constant seeks (they cause black frames).
-            // Only correct drift. While paused, snap to the scrubbed frame.
             const drift = Math.abs((video.currentTime || 0) - local);
             if (!state.isPlaying) {
               if (drift > 0.04 && video.readyState >= 1) {
@@ -269,6 +416,43 @@ export function PreviewPlayer() {
     };
   }, []);
 
+  function beginMove(e: React.MouseEvent, clip: TimelineClip) {
+    e.preventDefault();
+    e.stopPropagation();
+    setPlaying(false);
+    selectClip(clip.id);
+    const text = clip.text || DEFAULT_TEXT();
+    setTextDrag({
+      mode: "move",
+      id: clip.id,
+      originX: e.clientX,
+      originY: e.clientY,
+      startTX: text.x,
+      startTY: text.y,
+    });
+  }
+
+  function beginRotate(e: React.MouseEvent, clip: TimelineClip) {
+    e.preventDefault();
+    e.stopPropagation();
+    setPlaying(false);
+    selectClip(clip.id);
+    const text = clip.text || DEFAULT_TEXT();
+    const frame = frameRef.current;
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    const centerX = rect.left + text.x * rect.width;
+    const centerY = rect.top + text.y * rect.height;
+    setTextDrag({
+      mode: "rotate",
+      id: clip.id,
+      centerX,
+      centerY,
+      startAngle: Math.atan2(e.clientY - centerY, e.clientX - centerX),
+      originRotation: text.rotation,
+    });
+  }
+
   return (
     <section className="panel flex h-full min-h-0 flex-col overflow-hidden rounded-md">
       <div className="flex shrink-0 items-center justify-between border-b border-[var(--line)] px-3 py-2">
@@ -277,12 +461,15 @@ export function PreviewPlayer() {
         </div>
         <div className="font-[var(--font-mono)] text-[11px] text-[var(--muted)]">
           {projectWidth}×{projectHeight} · {formatTime(playhead)}
-          {activeVideoClips.length === 0 ? " · no clip" : ""}
+          {activeVideoClips.length === 0 && activeTextClips.length === 0
+            ? " · no clip"
+            : ""}
         </div>
       </div>
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[#05070b] p-3">
         <div
+          ref={frameRef}
           className="relative flex h-full max-h-full w-full max-w-full items-center justify-center overflow-hidden rounded-lg border border-[var(--line)]"
           style={{ aspectRatio: `${projectWidth / projectHeight}` }}
         >
@@ -295,6 +482,34 @@ export function PreviewPlayer() {
             )}
             className="max-h-full max-w-full bg-black object-contain"
           />
+          <div className="preview-text-layer">
+            {activeTextClips.map((clip) => {
+              const text = clip.text || DEFAULT_TEXT();
+              const selected = clip.id === selectedClipId;
+              return (
+                <div
+                  key={clip.id}
+                  className={`preview-text-item${selected ? " selected" : ""}`}
+                  style={textCss(text, frameSize.h || projectHeight, projectHeight)}
+                  onMouseDown={(e) => beginMove(e, clip)}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    selectClip(clip.id);
+                  }}
+                  title="Drag to move · use blue handle to rotate"
+                >
+                  {selected && (
+                    <div
+                      className="preview-text-rotate"
+                      onMouseDown={(e) => beginRotate(e, clip)}
+                      title="Rotate"
+                    />
+                  )}
+                  {text.content || "Text"}
+                </div>
+              );
+            })}
+          </div>
         </div>
         {previewError && (
           <div className="absolute bottom-4 left-1/2 max-w-[90%] -translate-x-1/2 rounded bg-black/80 px-3 py-1 text-center text-[11px] text-[var(--danger)]">

@@ -68,6 +68,93 @@ impl Default for ClipEffects {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TextStyle {
+    #[serde(default = "default_text_content")]
+    pub content: String,
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
+    #[serde(default = "default_font_size")]
+    pub font_size: f64,
+    #[serde(default = "default_white")]
+    pub color: String,
+    #[serde(default = "default_black")]
+    pub stroke_color: String,
+    #[serde(default)]
+    pub stroke_width: f64,
+    #[serde(default = "default_shadow_color")]
+    pub shadow_color: String,
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f64,
+    #[serde(default = "default_shadow_x")]
+    pub shadow_offset_x: f64,
+    #[serde(default = "default_shadow_y")]
+    pub shadow_offset_y: f64,
+    #[serde(default = "default_black")]
+    pub background_color: String,
+    #[serde(default)]
+    pub background_opacity: f64,
+    #[serde(default = "default_half")]
+    pub x: f64,
+    #[serde(default = "default_half")]
+    pub y: f64,
+    #[serde(default)]
+    pub rotation: f64,
+    #[serde(default = "default_align")]
+    pub align: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub letter_spacing: f64,
+    #[serde(default = "default_line_height")]
+    pub line_height: f64,
+    #[serde(default = "default_one")]
+    pub opacity: f64,
+}
+
+fn default_text_content() -> String {
+    "Text".into()
+}
+fn default_font_family() -> String {
+    "Segoe UI".into()
+}
+fn default_font_size() -> f64 {
+    72.0
+}
+fn default_white() -> String {
+    "#ffffff".into()
+}
+fn default_black() -> String {
+    "#000000".into()
+}
+fn default_shadow_color() -> String {
+    "rgba(0,0,0,0.65)".into()
+}
+fn default_shadow_blur() -> f64 {
+    10.0
+}
+fn default_shadow_x() -> f64 {
+    2.0
+}
+fn default_shadow_y() -> f64 {
+    3.0
+}
+fn default_half() -> f64 {
+    0.5
+}
+fn default_align() -> String {
+    "center".into()
+}
+fn default_line_height() -> f64 {
+    1.25
+}
+fn default_one() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TimelineClip {
     pub id: String,
     pub media_path: String,
@@ -80,6 +167,8 @@ pub struct TimelineClip {
     pub in_point: f64,
     pub out_point: f64,
     pub effects: ClipEffects,
+    #[serde(default)]
+    pub text: Option<TextStyle>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,6 +473,132 @@ fn audio_filters(fx: &ClipEffects) -> Vec<String> {
     filters
 }
 
+fn escape_drawtext(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace(':', "\\:")
+        .replace('\'', "\\'")
+        .replace('%', "%%")
+        .replace('\n', "\\n")
+        .replace('\r', "")
+}
+
+fn css_color_to_ffmpeg(color: &str) -> String {
+    let c = color.trim();
+    if let Some(rest) = c.strip_prefix('#') {
+        if rest.len() >= 6 {
+            return format!("0x{}", &rest[..6]);
+        }
+        if rest.len() == 3 {
+            let r = rest.chars().nth(0).unwrap();
+            let g = rest.chars().nth(1).unwrap();
+            let b = rest.chars().nth(2).unwrap();
+            return format!("0x{r}{r}{g}{g}{b}{b}");
+        }
+    }
+    if let Some(inner) = c
+        .strip_prefix("rgba(")
+        .or_else(|| c.strip_prefix("rgb("))
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        if parts.len() >= 3 {
+            let r: u32 = parts[0].parse().unwrap_or(0);
+            let g: u32 = parts[1].parse().unwrap_or(0);
+            let b: u32 = parts[2].parse().unwrap_or(0);
+            if parts.len() >= 4 {
+                let a: f64 = parts[3].parse().unwrap_or(1.0);
+                return format!("0x{:02X}{:02X}{:02X}@{}", r, g, b, a.clamp(0.0, 1.0));
+            }
+            return format!("0x{:02X}{:02X}{:02X}", r, g, b);
+        }
+    }
+    "white".into()
+}
+
+fn resolve_fontfile(family: &str) -> Option<String> {
+    let fonts = PathBuf::from(r"C:\Windows\Fonts");
+    let key = family.to_lowercase();
+    let candidates: &[&str] = match key.as_str() {
+        "arial" => &["arial.ttf", "arialbd.ttf"],
+        "georgia" => &["georgia.ttf"],
+        "impact" => &["impact.ttf"],
+        "verdana" => &["verdana.ttf"],
+        "trebuchet ms" => &["trebuc.ttf"],
+        "times new roman" => &["times.ttf"],
+        "consolas" => &["consola.ttf"],
+        "comic sans ms" => &["comic.ttf"],
+        "courier new" => &["cour.ttf"],
+        _ => &["segoeui.ttf", "arial.ttf", "tahoma.ttf"],
+    };
+    for name in candidates {
+        let p = fonts.join(name);
+        if p.exists() {
+            // FFmpeg on Windows wants escaped drive path: C\:/Windows/Fonts/arial.ttf
+            let s = p.to_string_lossy().replace('\\', "/");
+            return Some(s.replace(':', "\\:"));
+        }
+    }
+    None
+}
+
+fn build_drawtext_filter(text: &TextStyle, w: u32, h: u32, enable_start: f64, enable_end: f64) -> String {
+    let content = escape_drawtext(&text.content);
+    let fontsize = text.font_size.max(8.0).round() as i32;
+    let fontcolor = css_color_to_ffmpeg(&text.color);
+    let bordercolor = css_color_to_ffmpeg(&text.stroke_color);
+    let borderw = text.stroke_width.max(0.0).round() as i32;
+    let shadowx = text.shadow_offset_x.round() as i32;
+    let shadowy = text.shadow_offset_y.round() as i32;
+    let shadowcolor = css_color_to_ffmpeg(&text.shadow_color);
+    let alpha = text.opacity.clamp(0.05, 1.0);
+    let tx = text.x.clamp(0.0, 1.0);
+    let ty = text.y.clamp(0.0, 1.0);
+
+    let x_expr = match text.align.as_str() {
+        "left" => format!("W*{tx}"),
+        "right" => format!("W*{tx}-text_w"),
+        _ => format!("W*{tx}-text_w/2"),
+    };
+    let y_expr = format!("H*{ty}-text_h/2");
+
+    let mut parts = Vec::new();
+    if let Some(fontfile) = resolve_fontfile(&text.font_family) {
+        parts.push(format!("fontfile={fontfile}"));
+    }
+    parts.push(format!("text='{content}'"));
+    parts.push(format!("fontsize={fontsize}"));
+    parts.push(format!("fontcolor={fontcolor}@{alpha}"));
+    if borderw > 0 {
+        parts.push(format!("borderw={borderw}"));
+        parts.push(format!("bordercolor={bordercolor}"));
+    }
+    if shadowx != 0 || shadowy != 0 || text.shadow_blur > 0.0 {
+        parts.push(format!("shadowx={shadowx}"));
+        parts.push(format!("shadowy={shadowy}"));
+        parts.push(format!("shadowcolor={shadowcolor}"));
+    }
+    if text.background_opacity > 0.05 {
+        let boxcolor = css_color_to_ffmpeg(&text.background_color);
+        parts.push("box=1".into());
+        parts.push(format!(
+            "boxcolor={}@{}",
+            boxcolor,
+            text.background_opacity.clamp(0.0, 1.0)
+        ));
+        parts.push("boxborderw=8".into());
+    }
+    parts.push(format!("x={x_expr}"));
+    parts.push(format!("y={y_expr}"));
+    parts.push(format!(
+        "enable='between(t,{start},{end})'",
+        start = enable_start,
+        end = enable_end
+    ));
+
+    let _ = (w, h);
+    format!("drawtext={}", parts.join(":"))
+}
+
 pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResult, String> {
     if req.clips.is_empty() {
         return Err("Timeline is empty.".into());
@@ -404,9 +619,12 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
 
     let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into()];
 
-    // Unique media inputs
+    // Unique media inputs (skip text / empty paths)
     let mut input_map: Vec<String> = Vec::new();
     for c in &clips {
+        if c.track_kind == "text" || c.media_path.trim().is_empty() {
+            continue;
+        }
         if !input_map.iter().any(|p| p == &c.media_path) {
             input_map.push(c.media_path.clone());
         }
@@ -452,6 +670,9 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
     ));
 
     for (ci, clip) in clips.iter().enumerate() {
+        if clip.track_kind == "text" {
+            continue;
+        }
         let in_idx = input_map
             .iter()
             .position(|p| p == &clip.media_path)
@@ -584,6 +805,50 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
             end = start + _dur
         ));
         current = next;
+    }
+
+    // Text overlays (drawtext) after video layers
+    let text_clips: Vec<&TimelineClip> = clips
+        .iter()
+        .filter(|c| c.track_kind == "text" || c.text.is_some())
+        .collect();
+    for (ti, clip) in text_clips.iter().enumerate() {
+        let Some(text) = clip.text.as_ref() else {
+            continue;
+        };
+        if text.content.trim().is_empty() {
+            continue;
+        }
+        let speed = clip.effects.speed.clamp(0.1, 8.0);
+        let out_dur = (clip.out_point - clip.in_point).abs().max(0.05) / speed;
+        let start = clip.start;
+        let end = start + out_dur;
+        let next = format!("tx{ti}");
+
+        if text.rotation.abs() < 0.5 {
+            let dt = build_drawtext_filter(text, w, h, start, end);
+            filter_parts.push(format!("[{current}]{dt}[{next}]"));
+            current = next;
+        } else {
+            // Transparent layer → drawtext → rotate → overlay (timed)
+            let rad = text.rotation.to_radians();
+            let layer = format!("tl{ti}");
+            let rotated = format!("tlr{ti}");
+            let mut dt_static = build_drawtext_filter(text, w, h, 0.0, 1.0e6);
+            if let Some(idx) = dt_static.find(":enable=") {
+                dt_static.truncate(idx);
+            }
+            filter_parts.push(format!(
+                "color=c=black@0.0:s={w}x{h}:d={out_dur}:r={fps},format=rgba,{dt_static}[{layer}]"
+            ));
+            filter_parts.push(format!(
+                "[{layer}]rotate={rad}:c=none:ow=rotw(iw):oh=roth(ih),format=rgba[{rotated}]"
+            ));
+            filter_parts.push(format!(
+                "[{current}][{rotated}]overlay=(W-w)/2:(H-h)/2:enable='between(t,{start},{end})'[{next}]"
+            ));
+            current = next;
+        }
     }
 
     let final_v = current;
