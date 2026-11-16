@@ -11,7 +11,7 @@
   --accent: #4ea1ff;
   --danger: #d96b76;
   --clip-v: #3b6fd9;
-  --clip-a: #2f9e6b;
+  --clip-a: #1a3a5c;
   --clip-t: #c47a2c;
   --clip-fx: #8b5cf6;
   --warn: #d6a34a;
@@ -867,6 +867,36 @@ button {
   color: #efb4bb;
 }
 
+/* CapCut-like bare transport icons — no background box */
+.transport-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(235, 240, 248, 0.92);
+  cursor: pointer;
+  box-shadow: none;
+  outline: none;
+}
+.transport-icon:hover {
+  background: transparent;
+  color: #fff;
+  opacity: 1;
+}
+.transport-icon:active {
+  background: transparent;
+  opacity: 0.75;
+}
+.transport-play {
+  color: #fff;
+}
+
 .ctx-menu {
   position: fixed;
   z-index: 10000;
@@ -1133,8 +1163,9 @@ button {
 .tl-clip-audio {
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--clip-a) 88%, #fff) 0%,
-    var(--clip-a) 100%
+    #243f63 0%,
+    var(--clip-a) 55%,
+    #12283f 100%
   ) !important;
 }
 .tl-clip-text {

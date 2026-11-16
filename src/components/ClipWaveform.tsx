@@ -5,9 +5,11 @@ type Props = {
   path: string;
   width: number;
   height: number;
-  /** "fill" = audio track bars; "overlay" = faint wave on video clip */
+  /** "fill" = CapCut-style audio bars; "overlay" = faint wave on video clip */
   mode?: "fill" | "overlay";
   color?: string;
+  /** CapCut peak tip color (loud parts) */
+  peakColor?: string;
   inPoint?: number;
   outPoint?: number;
   mediaDuration?: number;
@@ -21,7 +23,8 @@ export function ClipWaveform({
   width,
   height,
   mode = "fill",
-  color = "rgba(220, 235, 255, 0.92)",
+  color = "rgba(96, 170, 255, 0.95)",
+  peakColor = "rgba(255, 140, 70, 0.95)",
   inPoint = 0,
   outPoint,
   mediaDuration,
@@ -37,7 +40,8 @@ export function ClipWaveform({
       setPeaks(null);
       return;
     }
-    const bars = Math.max(48, Math.min(400, Math.round(width * 1.4)));
+    // Dense CapCut-like bars (~2–3px each)
+    const bars = Math.max(64, Math.min(520, Math.round(width / 2.2)));
     void getWaveformPeaks(path, bars).then((p) => {
       if (alive) setPeaks(p);
     });
@@ -66,33 +70,61 @@ export function ClipWaveform({
     if (!n) return;
 
     const mid = height / 2;
-    const gap = mode === "overlay" ? 0.5 : 0.8;
-    const barW = Math.max(1, width / n - gap);
-
     const volScale = Math.max(0.05, Math.min(2.2, amplitude));
-    ctx.fillStyle = color;
-    for (let i = 0; i < n; i++) {
-      const amp = Math.max(0.04, slice[i] * volScale);
-      const maxH = height * (mode === "overlay" ? 0.9 : 0.92);
-      const h = Math.min(maxH, amp * maxH);
-      const x = (i / n) * width;
-      const y = mid - h / 2;
-      if (mode === "fill") {
-        ctx.globalAlpha = 0.5 + Math.min(1, amp) * 0.5;
-        ctx.fillRect(x, y, barW, Math.max(1, h));
-        if (amp > 0.85) {
-          ctx.globalAlpha = 0.55;
-          ctx.fillStyle = "rgba(255, 170, 110, 0.85)";
-          ctx.fillRect(x, y, barW, Math.max(1, h * 0.18));
-          ctx.fillStyle = color;
+
+    if (mode === "fill") {
+      // CapCut: bars grow UP from the bottom like mountains (not mirrored)
+      const gap = 0.55;
+      const barW = Math.max(1.2, width / n - gap);
+      const maxH = height * 0.92;
+      const tipH = Math.max(1.5, height * 0.08);
+      const floor = height; // baseline at bottom edge
+
+      for (let i = 0; i < n; i++) {
+        const amp = Math.max(0.04, Math.min(1.2, slice[i] * volScale));
+        const h = Math.max(2, Math.min(maxH, amp * maxH));
+        const x = (i / n) * width + gap / 2;
+        const y = floor - h;
+
+        ctx.globalAlpha = 0.75 + Math.min(1, amp) * 0.25;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, barW, h);
+
+        // Orange tip on loud peaks (top of the mountain)
+        if (amp > 0.58) {
+          const tip = Math.min(tipH, h * 0.2);
+          ctx.globalAlpha = 0.55 + Math.min(1, (amp - 0.58) / 0.42) * 0.45;
+          ctx.fillStyle = peakColor;
+          ctx.fillRect(x, y, barW, tip);
         }
-      } else {
+      }
+    } else {
+      const gap = 0.5;
+      const barW = Math.max(1, width / n - gap);
+      const maxH = height * 0.9;
+      ctx.fillStyle = color;
+      for (let i = 0; i < n; i++) {
+        const amp = Math.max(0.04, slice[i] * volScale);
+        const h = Math.min(maxH, amp * maxH);
+        const x = (i / n) * width;
+        const y = mid - h / 2;
         ctx.globalAlpha = 0.3 + Math.min(1, amp) * 0.5;
         ctx.fillRect(x, y, Math.max(1, barW), Math.max(1, h));
       }
     }
     ctx.globalAlpha = 1;
-  }, [peaks, width, height, mode, color, inPoint, outPoint, mediaDuration, amplitude]);
+  }, [
+    peaks,
+    width,
+    height,
+    mode,
+    color,
+    peakColor,
+    inPoint,
+    outPoint,
+    mediaDuration,
+    amplitude,
+  ]);
 
   if (!path || width < 8) return null;
 

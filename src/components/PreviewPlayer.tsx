@@ -12,6 +12,7 @@ import {
   TimelineClip,
 } from "../types/editor";
 import { syncMediaAudio } from "../lib/audioEngine";
+import { IconPause, IconPlay, IconReset } from "./Icons";
 
 function fadeMultiplier(
   localT: number,
@@ -847,23 +848,27 @@ export function PreviewPlayer() {
       <div className="flex shrink-0 items-center gap-2 border-t border-[var(--line)] bg-[var(--bg-2)] px-3 py-2">
         <button
           type="button"
-          className="btn"
+          className="transport-icon"
+          title="Reset to start"
+          aria-label="Reset"
           onClick={() => {
             setPlaying(false);
             setPlayhead(0);
           }}
         >
-          Reset
+          <IconReset size={18} />
         </button>
         <button
           type="button"
-          className="btn btn-accent min-w-24"
+          className="transport-icon transport-play"
+          title={isPlaying ? "Pause" : "Play"}
+          aria-label={isPlaying ? "Pause" : "Play"}
           onClick={() => {
             if (!isPlaying && playhead >= contentEnd() - 0.05) setPlayhead(0);
             setPlaying(!isPlaying);
           }}
         >
-          {isPlaying ? "Pause" : "Play"}
+          {isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
         </button>
         <span className="w-16 font-[var(--font-mono)] text-[11px] text-[var(--muted)]">
           {formatTime(playhead)}

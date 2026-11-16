@@ -338,3 +338,29 @@ export function IconRemoveBg(props: IconProps) {
     </Svg>
   );
 }
+
+export function IconPlay(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M7 4.5v15l13-7.5L7 4.5z" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
+export function IconPause(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none" />
+      <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
+export function IconReset(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.5 12a8.5 8.5 0 1 0 2.2-5.7" />
+      <path d="M3 5v5h5" />
+    </Svg>
+  );
+}

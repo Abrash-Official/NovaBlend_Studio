@@ -970,7 +970,8 @@ export function Timeline() {
                                 width={innerW}
                                 height={clipH}
                                 mode="fill"
-                                color="rgba(210, 230, 255, 0.95)"
+                                color="rgba(90, 168, 255, 0.95)"
+                                peakColor="rgba(255, 138, 64, 0.95)"
                                 inPoint={clip.inPoint}
                                 outPoint={clip.outPoint}
                                 mediaDuration={mediaDur}
