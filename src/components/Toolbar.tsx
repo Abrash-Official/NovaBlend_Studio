@@ -13,7 +13,6 @@ import {
 import {
   getProjectsDir,
   listProjectFiles,
-  loadLastProjectPath,
   loadProjectSnapshot,
   saveProjectSnapshot,
 } from "../lib/projects";
@@ -59,25 +58,12 @@ export function Toolbar() {
     projectName,
     setProjectName,
     dirty,
-    newProject,
     loadSnapshot,
     toSnapshot,
     bumpProcessing,
+    setView,
+    setPlaying,
   } = useEditorStore();
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const last = await loadLastProjectPath();
-        if (!last) return;
-        const snap = await loadProjectSnapshot(last);
-        loadSnapshot(snap);
-        setStatus(`Restored: ${snap.name}`);
-      } catch {
-        /* ignore */
-      }
-    })();
-  }, [loadSnapshot, setStatus]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -111,17 +97,28 @@ export function Toolbar() {
     });
   }
 
-  async function onNewProject() {
+  async function onGoHome() {
     if (dirty) {
-      const ok = await ask("Discard unsaved changes and create a new project?", {
-        title: "New Project",
+      const ok = await ask("Leave editor? Unsaved changes will be lost unless you Save first.", {
+        title: "Back to projects",
         kind: "warning",
       });
       if (!ok) return;
     }
-    const name = window.prompt("Project name", "My Video 1");
-    if (name === null) return;
-    newProject(name);
+    setPlaying(false);
+    setView("home");
+  }
+
+  async function onNewProject() {
+    if (dirty) {
+      const discard = await ask(
+        "Unsaved changes will be lost. Go to Home to create a new project?",
+        { title: "New Project", kind: "warning" },
+      );
+      if (!discard) return;
+    }
+    setPlaying(false);
+    setView("home");
   }
 
   async function onSaveProject() {
@@ -357,7 +354,10 @@ export function Toolbar() {
         className="flex items-center gap-0.5 border border-[var(--line)] bg-[var(--bg-2)] p-0.5"
         style={{ borderRadius: "var(--radius)" }}
       >
-        <button className="btn btn-ghost" onClick={onNewProject}>
+        <button className="btn btn-ghost" onClick={onGoHome} title="Projects home">
+          Home
+        </button>
+        <button className="btn btn-ghost" onClick={onNewProject} title="Create another project">
           New
         </button>
         <button className="btn btn-ghost" onClick={onOpenProject}>

@@ -1,4 +1,5 @@
 import { ExportDialog } from "./components/ExportDialog";
+import { HomeScreen } from "./components/HomeScreen";
 import { MediaBin } from "./components/MediaBin";
 import { PreviewPlayer } from "./components/PreviewPlayer";
 import { PropertiesPanel } from "./components/PropertiesPanel";
@@ -7,12 +8,18 @@ import { Toolbar } from "./components/Toolbar";
 import { useEditorStore } from "./store/editorStore";
 
 export default function App() {
+  const view = useEditorStore((s) => s.view);
   const status = useEditorStore((s) => s.status);
   const processingCount = useEditorStore((s) => s.processingCount);
   const exporting = useEditorStore((s) => s.exporting);
   const exportPercent = useEditorStore((s) => s.exportPercent);
   const projectName = useEditorStore((s) => s.projectName);
   const dirty = useEditorStore((s) => s.dirty);
+  const projectPath = useEditorStore((s) => s.projectPath);
+
+  if (view === "home") {
+    return <HomeScreen />;
+  }
 
   return (
     <div className="app-shell">
@@ -37,9 +44,10 @@ export default function App() {
             status
           )}
         </span>
-        <span className="ml-auto shrink-0">
+        <span className="ml-auto shrink-0 truncate" title={projectPath || undefined}>
           {projectName}
-          {dirty ? "*" : ""} · projects next to .exe
+          {dirty ? "*" : ""}
+          {projectPath ? " · saved" : " · unsaved"}
         </span>
       </footer>
     </div>

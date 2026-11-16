@@ -129,6 +129,8 @@ export interface ProjectSnapshot {
   name: string;
   savedAt: string;
   filePath?: string;
+  /** Cover image for home screen cards */
+  coverPath?: string;
   aspect: AspectRatioId;
   fps: number;
   backgroundBlur: boolean;

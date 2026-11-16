@@ -56,7 +56,10 @@ function migrateClipTracks(clips: TimelineClip[]): TimelineClip[] {
   });
 }
 
+export type AppView = "home" | "editor";
+
 interface EditorState {
+  view: AppView;
   projectName: string;
   projectPath: string | null;
   dirty: boolean;
@@ -80,6 +83,7 @@ interface EditorState {
   showExportDialog: boolean;
   processingCount: number;
 
+  setView: (v: AppView) => void;
   setStatus: (s: string) => void;
   setPlayhead: (t: number) => void;
   setPlaying: (v: boolean) => void;
@@ -125,13 +129,14 @@ interface EditorState {
   addKeyframe: (prop: "scale" | "opacity", time: number, value: number) => void;
   timelineDuration: () => number;
 
-  newProject: (name?: string) => void;
+  newProject: (name?: string, aspect?: AspectRatioId) => void;
   loadSnapshot: (snap: ProjectSnapshot) => void;
   toSnapshot: () => ProjectSnapshot;
   bumpProcessing: (delta: number) => void;
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
+  view: "home",
   projectName: "Untitled Project",
   projectPath: null,
   dirty: false,
@@ -155,6 +160,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   showExportDialog: false,
   processingCount: 0,
 
+  setView: (v) => set({ view: v }),
   setStatus: (s) => set({ status: s }),
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
   setPlaying: (v) => set({ isPlaying: v }),
@@ -629,26 +635,30 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     );
   },
 
-  newProject: (name) =>
+  newProject: (name, aspect) => {
+    const a = aspect || "16:9";
+    const p = ASPECT_PRESETS[a];
     set({
       projectName: name?.trim() || "Untitled Project",
       projectPath: null,
-      dirty: false,
+      dirty: true,
       media: [],
       tracks: defaultTracks,
       clips: [],
       selectedClipId: null,
       playhead: 0,
       isPlaying: false,
-      aspect: "16:9",
-      projectWidth: 1920,
-      projectHeight: 1080,
+      aspect: a,
+      projectWidth: p.width,
+      projectHeight: p.height,
       fps: 30,
       backgroundBlur: true,
       zoom: 64,
       status: `New project: ${name?.trim() || "Untitled Project"}`,
       processingCount: 0,
-    }),
+      view: "editor",
+    });
+  },
 
   loadSnapshot: (snap) =>
     set({
@@ -674,6 +684,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       zoom: snap.zoom || 64,
       status: `Opened project: ${snap.name}`,
       processingCount: 0,
+      view: "editor",
     }),
 
   toSnapshot: () => {

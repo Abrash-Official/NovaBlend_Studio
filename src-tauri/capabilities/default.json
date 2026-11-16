@@ -16,10 +16,15 @@
     "fs:allow-read-dir",
     "fs:allow-write-text-file",
     "fs:allow-read-text-file",
+    "fs:allow-remove",
+    "fs:allow-rename",
+    "fs:allow-copy-file",
     "dialog:allow-ask",
     "dialog:allow-open",
     "dialog:allow-save",
     "core:path:default",
+    "opener:allow-reveal-item-in-dir",
+    "opener:allow-open-path",
     {
       "identifier": "fs:scope",
       "allow": [{ "path": "**" }]
