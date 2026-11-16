@@ -364,6 +364,10 @@ interface EditorState {
   pruneEmptyTracks: () => void;
   addKeyframe: (prop: KeyframeProp, time: number, value: number) => void;
   toggleKeyframe: (prop: KeyframeProp, time: number, value: number) => void;
+  /** Remove all transform keyframes at a local clip time. */
+  removeKeyframesAtTime: (clipId: string, time: number) => void;
+  /** True if playhead sits on any keyframe of the selected clip. */
+  playheadOnKeyframe: () => boolean;
   timelineDuration: () => number;
 
   setMagnetEnabled: (v: boolean) => void;
@@ -1013,8 +1017,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       clips: s.clips.map((c) => {
         if (c.id !== id) return c;
         let effects = { ...c.effects, ...patch };
-        // Keep active playhead keyframes in sync when dragging sliders
-        const localT = Math.max(0, s.playhead - c.start);
+        const onClip =
+          s.playhead >= c.start - 0.001 &&
+          s.playhead <= c.start + c.duration + 0.001;
+        const localT = Math.max(
+          0,
+          Math.min(c.duration, s.playhead - c.start),
+        );
         const keyed: KeyframeProp[] = [
           "scale",
           "opacity",
@@ -1025,13 +1034,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         for (const prop of keyed) {
           if (patch[prop] === undefined) continue;
           const key = keyframeListKey(prop);
-          const list = [...(effects[key] || [])];
-          if (!list.length) continue;
+          let list = [...(effects[key] || [])];
+          // CapCut-like: once a prop has keyframes, edits auto-upsert at playhead
+          if (!list.length || !onClip) continue;
           const idx = list.findIndex((k) => Math.abs(k.time - localT) <= 0.05);
+          const value = Number(patch[prop]);
           if (idx >= 0) {
-            list[idx] = { time: list[idx].time, value: Number(patch[prop]) };
-            effects = { ...effects, [key]: list };
+            list[idx] = { time: list[idx].time, value };
+          } else {
+            // Seed t=0 with previous value so mid-clip edits animate correctly
+            if (!list.some((k) => k.time <= 0.05) && localT > 0.05) {
+              const prev =
+                prop === "scale"
+                  ? c.effects.scale
+                  : prop === "opacity"
+                    ? c.effects.opacity
+                    : prop === "posX"
+                      ? c.effects.posX ?? 0
+                      : prop === "posY"
+                        ? c.effects.posY ?? 0
+                        : c.effects.rotation;
+              list.push({ time: 0, value: prev });
+            }
+            list.push({ time: localT, value });
+            list = list.sort((a, b) => a.time - b.time);
           }
+          effects = { ...effects, [key]: list };
         }
         return { ...c, effects };
       }),
@@ -1461,6 +1489,59 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       status: removing ? `Removed ${prop} keyframe` : `Added ${prop} keyframe`,
       dirty: true,
     }));
+  },
+
+  removeKeyframesAtTime: (clipId, time) => {
+    if (get().isClipLocked(clipId)) {
+      set({ status: "Track is locked" });
+      return;
+    }
+    const props: KeyframeProp[] = [
+      "scale",
+      "opacity",
+      "posX",
+      "posY",
+      "rotation",
+    ];
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== clipId) return c;
+        let effects = { ...c.effects };
+        let removed = 0;
+        for (const prop of props) {
+          const key = keyframeListKey(prop);
+          const list = effects[key] || [];
+          const next = list.filter((k) => Math.abs(k.time - time) > 0.05);
+          if (next.length !== list.length) {
+            removed += list.length - next.length;
+            effects = { ...effects, [key]: next };
+          }
+        }
+        return removed ? { ...c, effects } : c;
+      }),
+      status: "Keyframe removed",
+      dirty: true,
+    }));
+  },
+
+  playheadOnKeyframe: () => {
+    const s = get();
+    const clip = s.clips.find((c) => c.id === s.selectedClipId);
+    if (!clip) return false;
+    const localT = s.playhead - clip.start;
+    if (localT < -0.05 || localT > clip.duration + 0.05) return false;
+    const props: KeyframeProp[] = [
+      "scale",
+      "opacity",
+      "posX",
+      "posY",
+      "rotation",
+    ];
+    for (const prop of props) {
+      const list = clip.effects[keyframeListKey(prop)] || [];
+      if (list.some((k) => Math.abs(k.time - localT) <= 0.05)) return true;
+    }
+    return false;
   },
 
   timelineDuration: () => {

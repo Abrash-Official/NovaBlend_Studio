@@ -82,13 +82,24 @@ export function useEditorHotkeys(enabled: boolean) {
         return;
       }
 
-      // Delete / Backspace — remove selected clip
+      // Delete / Backspace — remove keyframe under playhead, else selected clip
       if (key === "Delete" || key === "Backspace") {
         if (!s.selectedClipId) {
           s.setStatus("Select a clip to delete");
           return;
         }
         e.preventDefault();
+        if (s.playheadOnKeyframe()) {
+          const clip = s.clips.find((c) => c.id === s.selectedClipId);
+          if (clip) {
+            s.pushHistory();
+            s.removeKeyframesAtTime(
+              clip.id,
+              Math.max(0, s.playhead - clip.start),
+            );
+          }
+          return;
+        }
         s.removeSelectedClip();
         return;
       }

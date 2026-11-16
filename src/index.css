@@ -1187,15 +1187,26 @@ button {
 }
 .tl-kf-mark {
   position: absolute;
-  top: 3px;
-  width: 7px;
-  height: 7px;
-  margin-left: -3.5px;
+  top: 2px;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  padding: 0;
+  border: 0;
   background: #fff;
   transform: rotate(45deg);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
-  z-index: 3;
-  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  z-index: 5;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.tl-kf-mark:hover {
+  background: #e8f2ff;
+  box-shadow: 0 0 0 1px rgba(78, 161, 255, 0.7);
+}
+.tl-kf-mark.on {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55);
 }
 .tl-clip-audio {
   background: linear-gradient(

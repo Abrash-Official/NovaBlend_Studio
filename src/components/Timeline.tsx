@@ -12,7 +12,7 @@ import {
   TrackKind,
 } from "../types/editor";
 import { useEditorStore } from "../store/editorStore";
-import { snapClipStart } from "../lib/snap";
+import { snapClipStart, snapPlayhead } from "../lib/snap";
 import { ClipWaveform } from "./ClipWaveform";
 import { ClipFilmstrip } from "./ClipFilmstrip";
 import {
@@ -196,6 +196,7 @@ export function Timeline() {
     toggleRemoveBg,
     addQuickKeyframe,
     splitSelectedAtPlayhead,
+    removeKeyframesAtTime,
     aspect,
     setAspect,
   } = useEditorStore();
@@ -266,20 +267,34 @@ export function Timeline() {
     return Math.max(0, Math.min(duration, x / zoom));
   }
 
+  function scrubPlayheadToClientX(clientX: number) {
+    const state = useEditorStore.getState();
+    let t = timeFromClientX(clientX);
+    if (state.magnetEnabled) {
+      const threshold = Math.max(0.05, 10 / zoom);
+      t = snapPlayhead({
+        time: t,
+        clips: state.clips,
+        duration,
+        threshold,
+      });
+    }
+    setPlaying(false);
+    setPlayhead(t);
+  }
+
   function beginPlayheadScrub(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     setMenu(null);
-    setPlaying(false);
     setScrubbing(true);
-    setPlayhead(timeFromClientX(e.clientX));
+    scrubPlayheadToClientX(e.clientX);
   }
 
   useEffect(() => {
     if (!scrubbing) return;
     const onMove = (e: MouseEvent) => {
-      setPlaying(false);
-      setPlayhead(timeFromClientX(e.clientX));
+      scrubPlayheadToClientX(e.clientX);
     };
     const onUp = () => setScrubbing(false);
     window.addEventListener("mousemove", onMove);
@@ -1069,12 +1084,43 @@ export function Timeline() {
                             const x =
                               (t / Math.max(0.05, clip.duration)) * innerW;
                             if (x < 2 || x > innerW - 2) return null;
+                            const absT = clip.start + t;
+                            const active =
+                              Math.abs(playhead - absT) <= 0.05;
                             return (
-                              <span
+                              <button
                                 key={`kf-${t}`}
-                                className="tl-kf-mark"
+                                type="button"
+                                className={`tl-kf-mark ${active ? "on" : ""}`}
                                 style={{ left: x }}
-                                title={`Keyframe @ ${t.toFixed(2)}s`}
+                                title={
+                                  active
+                                    ? "Keyframe (active) · Right-click or Del to remove"
+                                    : "Click to jump · Right-click to delete"
+                                }
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setPlaying(false);
+                                  selectClip(clip.id);
+                                  setPlayhead(absT);
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (track.locked) {
+                                    setStatus("Track is locked");
+                                    return;
+                                  }
+                                  pushHistory();
+                                  removeKeyframesAtTime(clip.id, t);
+                                  selectClip(clip.id);
+                                  setPlayhead(absT);
+                                }}
                               />
                             );
                           })}
