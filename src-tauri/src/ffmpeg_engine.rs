@@ -3,6 +3,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::AppHandle;
 
+fn default_volume() -> f64 {
+    1.0
+}
+fn default_blend() -> String {
+    "normal".into()
+}
+
+fn default_mask_shape() -> String {
+    "box".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Keyframe {
@@ -24,6 +35,22 @@ pub struct ClipEffects {
     pub tint: f64,
     #[serde(default)]
     pub vignette_amount: f64,
+    #[serde(default)]
+    pub soft_blur: f64,
+    #[serde(default)]
+    pub pos_x: f64,
+    #[serde(default)]
+    pub pos_y: f64,
+    #[serde(default = "default_volume")]
+    pub volume: f64,
+    #[serde(default)]
+    pub audio_fade_in: f64,
+    #[serde(default)]
+    pub audio_fade_out: f64,
+    #[serde(default)]
+    pub audio_enhance: bool,
+    #[serde(default = "default_blend")]
+    pub blend_mode: String,
     pub scale: f64,
     pub rotation: f64,
     pub opacity: f64,
@@ -37,6 +64,8 @@ pub struct ClipEffects {
     pub crop_h: f64,
     pub mask_enabled: bool,
     pub mask_feather: f64,
+    #[serde(default = "default_mask_shape")]
+    pub mask_shape: String,
     pub motion_blur: f64,
     pub effect: String,
     #[serde(default)]
@@ -59,6 +88,14 @@ impl Default for ClipEffects {
             temperature: 0.0,
             tint: 0.0,
             vignette_amount: 0.0,
+            soft_blur: 0.0,
+            pos_x: 0.0,
+            pos_y: 0.0,
+            volume: 1.0,
+            audio_fade_in: 0.0,
+            audio_fade_out: 0.0,
+            audio_enhance: false,
+            blend_mode: "normal".into(),
             scale: 1.0,
             rotation: 0.0,
             opacity: 1.0,
@@ -72,6 +109,7 @@ impl Default for ClipEffects {
             crop_h: 1.0,
             mask_enabled: false,
             mask_feather: 0.0,
+            mask_shape: "box".into(),
             motion_blur: 0.0,
             effect: "none".into(),
             fade_in: 0.0,
@@ -513,6 +551,9 @@ fn effect_filters(fx: &ClipEffects, clip_duration: f64) -> Vec<String> {
         let a = fx.vignette_amount.clamp(0.05, 1.0);
         filters.push(format!("vignette={}", std::f64::consts::PI / 4.0 * a));
     }
+    if fx.soft_blur > 0.05 {
+        filters.push(format!("gblur=sigma={}", fx.soft_blur.clamp(0.05, 12.0)));
+    }
 
     if fx.fade_in > 0.02 {
         filters.push(format!("fade=t=in:st=0:d={}", fx.fade_in));
@@ -529,11 +570,22 @@ fn effect_filters(fx: &ClipEffects, clip_duration: f64) -> Vec<String> {
 
     if fx.mask_enabled {
         let feather = fx.mask_feather.clamp(0.0, 50.0);
-        filters.push(format!(
-            "format=rgba,geq=lum='p(X,Y)':a='if(gt(abs(X-W/2)/(W/2),0.95),0,if(gt(abs(Y-H/2)/(H/2),0.95),0,255))'"
-        ));
+        let x = fx.crop_x.clamp(0.0, 0.45);
+        let y = fx.crop_y.clamp(0.0, 0.45);
+        let w = fx.crop_w.clamp(0.1, 1.0);
+        let h = fx.crop_h.clamp(0.1, 1.0);
+        if fx.mask_shape == "circle" {
+            // Elliptical alpha window using crop rect as bounds
+            filters.push(format!(
+                "format=rgba,geq=lum='p(X,Y)':a='if(lte(pow((X-W*({x}+{w}/2))/(W*{w}/2),2)+pow((Y-H*({y}+{h}/2))/(H*{h}/2),2),1),255,0)'"
+            ));
+        } else {
+            filters.push(format!(
+                "format=rgba,geq=lum='p(X,Y)':a='if(between(X,W*{x},W*({x}+{w}))*between(Y,H*{y},H*({y}+{h})),255,0)'"
+            ));
+        }
         if feather > 0.5 {
-            filters.push(format!("gblur=sigma={feather}"));
+            filters.push(format!("gblur=sigma={}", (feather * 0.35).max(0.5)));
         }
     }
 
@@ -562,6 +614,16 @@ fn audio_filters(fx: &ClipEffects) -> Vec<String> {
     }
     if fx.reverse {
         filters.push("areverse".into());
+    }
+    let vol = fx.volume.clamp(0.0, 2.0);
+    if (vol - 1.0).abs() > 0.01 {
+        filters.push(format!("volume={vol}"));
+    }
+    if fx.audio_fade_in > 0.02 {
+        filters.push(format!("afade=t=in:st=0:d={}", fx.audio_fade_in));
+    }
+    if fx.audio_fade_out > 0.02 {
+        filters.push(format!("afade=t=out:d={}", fx.audio_fade_out));
     }
     filters
 }

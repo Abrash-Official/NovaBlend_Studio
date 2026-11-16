@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ClipEffects, DEFAULT_TEXT, TimelineClip, TextStyle } from "../types/editor";
+import {
+  activeFxClipAt,
+  activeMaskClipAt,
+  ClipEffects,
+  DEFAULT_TEXT,
+  TimelineClip,
+  TextStyle,
+} from "../types/editor";
 
 export interface MediaProbe {
   path: string;
@@ -27,6 +34,14 @@ function toBackendEffects(fx: ClipEffects) {
     temperature: fx.temperature ?? 0,
     tint: fx.tint ?? 0,
     vignetteAmount: fx.vignetteAmount ?? 0,
+    softBlur: fx.softBlur ?? 0,
+    posX: fx.posX ?? 0,
+    posY: fx.posY ?? 0,
+    volume: fx.volume ?? 1,
+    audioFadeIn: fx.audioFadeIn ?? 0,
+    audioFadeOut: fx.audioFadeOut ?? 0,
+    audioEnhance: false,
+    blendMode: fx.blendMode || "normal",
     scale: fx.scale,
     rotation: fx.rotation,
     opacity: fx.opacity,
@@ -40,6 +55,7 @@ function toBackendEffects(fx: ClipEffects) {
     cropH: fx.cropH,
     maskEnabled: fx.maskEnabled,
     maskFeather: fx.maskFeather,
+    maskShape: fx.maskShape || "box",
     motionBlur: fx.motionBlur,
     effect: fx.effect,
     fadeIn: fx.fadeIn || 0,
@@ -79,21 +95,66 @@ function toBackendText(text?: TextStyle) {
 }
 
 export function clipsToExportPayload(clips: TimelineClip[]) {
-  return clips.map((c) => ({
-    id: c.id,
-    mediaPath: c.mediaPath || "",
-    trackIndex: c.trackIndex,
-    trackKind: c.trackKind,
-    hasAudio: c.hasAudio,
-    start: c.start,
-    duration: c.duration,
-    inPoint: c.inPoint,
-    outPoint: c.outPoint,
-    effects: toBackendEffects(c.effects),
-    text: c.trackKind === "text" || c.text ? toBackendText(c.text) : null,
-    isStill: !!c.isStill,
-    stillPath: c.stillPath || null,
-  }));
+  // Bake overlapping F1 look/mask into video clips — backend skips FX track items.
+  return clips
+    .filter((c) => c.trackKind !== "fx")
+    .map((c) => {
+      let effects = c.effects;
+      if (c.trackKind === "video") {
+        const mid = c.start + Math.max(0.01, c.duration) * 0.5;
+        const look = activeFxClipAt(clips, mid);
+        const mask = activeMaskClipAt(clips, mid);
+        if (look?.effects) {
+          effects = {
+            ...effects,
+            ...look.effects,
+            scale: c.effects.scale,
+            rotation: c.effects.rotation,
+            mirrorH: c.effects.mirrorH,
+            mirrorV: c.effects.mirrorV,
+            speed: c.effects.speed,
+            volume: c.effects.volume,
+            audioFadeIn: c.effects.audioFadeIn,
+            audioFadeOut: c.effects.audioFadeOut,
+            posX: c.effects.posX,
+            posY: c.effects.posY,
+            opacity: c.effects.opacity,
+            blendMode: c.effects.blendMode,
+            fadeIn: c.effects.fadeIn,
+            fadeOut: c.effects.fadeOut,
+            scaleKeyframes: c.effects.scaleKeyframes,
+            opacityKeyframes: c.effects.opacityKeyframes,
+          };
+        }
+        if (mask?.effects) {
+          effects = {
+            ...effects,
+            maskEnabled: true,
+            maskShape: mask.effects.maskShape || "box",
+            maskFeather: mask.effects.maskFeather,
+            cropX: mask.effects.cropX,
+            cropY: mask.effects.cropY,
+            cropW: mask.effects.cropW,
+            cropH: mask.effects.cropH,
+          };
+        }
+      }
+      return {
+        id: c.id,
+        mediaPath: c.mediaPath || "",
+        trackIndex: c.trackIndex,
+        trackKind: c.trackKind,
+        hasAudio: c.hasAudio,
+        start: c.start,
+        duration: c.duration,
+        inPoint: c.inPoint,
+        outPoint: c.outPoint,
+        effects: toBackendEffects(effects),
+        text: c.trackKind === "text" || c.text ? toBackendText(c.text) : null,
+        isStill: !!c.isStill,
+        stillPath: c.stillPath || null,
+      };
+    });
 }
 
 export async function probeMedia(path: string) {

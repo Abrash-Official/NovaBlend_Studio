@@ -1,24 +1,19 @@
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
-import { ASPECT_PRESETS, AspectRatioId, isTextClip } from "../types/editor";
+import { ASPECT_PRESETS, AspectRatioId } from "../types/editor";
 import {
   createPreviewProxy,
-  extractMediaAudio,
   PreviewProgressEvent,
   previewThumbPath,
   probeMedia,
 } from "../lib/api";
-import {
-  getProjectsDir,
-  listProjectFiles,
-  loadProjectSnapshot,
-} from "../lib/projects";
 import { saveCurrentProject } from "../lib/saveProject";
+import { OpenProjectDialog } from "./OpenProjectDialog";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import {
   IconAdd,
-  IconAudio,
   IconImport,
   IconSplit,
   IconText,
@@ -51,17 +46,29 @@ export function Toolbar() {
     setBackgroundBlur,
     clips,
     exporting,
-    setExporting,
     setShowExportDialog,
     setStatus,
     selectedClipId,
     projectName,
     dirty,
-    loadSnapshot,
     bumpProcessing,
     setView,
     setPlaying,
+    lastAutoSavedAt,
   } = useEditorStore();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [openProjectOpen, setOpenProjectOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [menuOpen]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -111,53 +118,8 @@ export function Toolbar() {
     await saveCurrentProject();
   }
 
-  async function onOpenProject() {
-    try {
-      if (dirty) {
-        const ok = await ask("Discard unsaved changes and open another project?", {
-          title: "Open Project",
-          kind: "warning",
-        });
-        if (!ok) return;
-      }
-      const listed = await listProjectFiles();
-      if (!listed.length) {
-        const selected = await open({
-          multiple: false,
-          filters: [{ name: "NovaBlend Project", extensions: ["json"] }],
-          defaultPath: await getProjectsDir(),
-        });
-        if (!selected || Array.isArray(selected)) return;
-        loadSnapshot(await loadProjectSnapshot(selected));
-        return;
-      }
-      const labels = listed
-        .map((p, i) => `${i + 1}. ${p.name}${p.savedAt ? ` (${p.savedAt.slice(0, 19)})` : ""}`)
-        .join("\n");
-      const choice = window.prompt(
-        `Projects folder:\n${await getProjectsDir()}\n\nOpen number:\n${labels}\n\nBlank = browse`,
-        "1",
-      );
-      if (choice === null) return;
-      if (!choice.trim()) {
-        const selected = await open({
-          multiple: false,
-          filters: [{ name: "NovaBlend Project", extensions: ["json"] }],
-          defaultPath: await getProjectsDir(),
-        });
-        if (!selected || Array.isArray(selected)) return;
-        loadSnapshot(await loadProjectSnapshot(selected));
-        return;
-      }
-      const idx = Number(choice) - 1;
-      if (!listed[idx]) {
-        setStatus("Invalid project number");
-        return;
-      }
-      loadSnapshot(await loadProjectSnapshot(listed[idx].path));
-    } catch (e) {
-      setStatus(`Open failed: ${e}`);
-    }
+  function onOpenProject() {
+    setOpenProjectOpen(true);
   }
 
   async function importMedia() {
@@ -238,108 +200,117 @@ export function Toolbar() {
     }
   }
 
-  async function doExtractAudio() {
-    const state = useEditorStore.getState();
-    const selected =
-      (state.selectedClipId &&
-        state.clips.find((c) => c.id === state.selectedClipId)) ||
-      state.clips.find(
-        (c) =>
-          !isTextClip(c) &&
-          c.hasAudio &&
-          state.playhead >= c.start &&
-          state.playhead < c.start + c.duration,
-      ) ||
-      state.clips.find((c) => !isTextClip(c) && c.hasAudio);
-
-    if (!selected || isTextClip(selected) || !selected.hasAudio) {
-      setStatus("Select a video/audio clip that has sound, then Extract Audio");
-      return;
-    }
-    if (selected.isStill) {
-      setStatus("Freeze frames have no audio to extract");
-      return;
-    }
-
-    const src = selected.mediaPath || selected.previewPath;
-    if (!src) {
-      setStatus("No media path on this clip");
-      return;
-    }
-
-    setExporting(true);
-    bumpProcessing(1);
-    setStatus("Extracting audio into Media Bin…");
-    try {
-      const audioPath = await extractMediaAudio({
-        path: src,
-        inPoint: selected.inPoint,
-        outPoint: selected.outPoint,
-      });
-      const probe = await probeMedia(audioPath);
-      const id = uid();
-      const name = `${selected.name.replace(/\.[^.]+$/, "") || "Clip"} · audio`;
-      addMedia({
-        id,
-        name,
-        path: probe.path || audioPath,
-        previewPath: probe.path || audioPath,
-        duration: probe.duration || Math.max(0.05, selected.outPoint - selected.inPoint),
-        width: 0,
-        height: 0,
-        hasVideo: false,
-        hasAudio: true,
-        codec: probe.codec || "mp3",
-        fps: 0,
-        readyState: "ready",
-        statusMessage: "Ready",
-        progressPercent: 100,
-      });
-      const audioTrack =
-        state.tracks.find((t) => t.kind === "audio")?.index ?? 3;
-      addClipFromMedia(id, audioTrack);
-      setStatus(`Audio added to Media Bin + A1: ${name}`);
-    } catch (e) {
-      setStatus(`Extract failed: ${e}`);
-    } finally {
-      bumpProcessing(-1);
-      setExporting(false);
-    }
-  }
-
   const processingMedia = useEditorStore((s) =>
     s.media.find((m) => m.readyState === "processing"),
   );
 
+  const autoLabel =
+    lastAutoSavedAt && !dirty
+      ? "Auto saved"
+      : dirty
+        ? "Unsaved changes"
+        : lastAutoSavedAt
+          ? "Auto saved"
+          : "Ready";
+
   return (
     <header className="flex items-center gap-1.5 border-b border-[var(--line)] bg-[var(--bg-1)] px-2">
-      <div className="mr-1 flex min-w-0 items-center gap-1.5">
-        <img src="/icon.svg" alt="" className="h-5 w-5 rounded-sm" />
-        <div className="min-w-0 leading-tight">
-          <div className="text-[12px] font-semibold">NovaBlend</div>
-          <div className="max-w-[120px] truncate text-[10px] text-[var(--muted)]" title={projectName}>
-            {projectName}
-            {dirty ? "*" : ""}
+      <div className="relative mr-1" ref={menuRef}>
+        <button
+          type="button"
+          className={`btn ${menuOpen ? "btn-accent" : ""}`}
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          Menu
+        </button>
+        {menuOpen && (
+          <div className="main-menu">
+            <div className="main-menu-section">File</div>
+            <button
+              type="button"
+              className="main-menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                void onNewProject();
+              }}
+            >
+              New Project
+            </button>
+            <button
+              type="button"
+              className="main-menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                void onOpenProject();
+              }}
+            >
+              Open Project…
+            </button>
+            <button
+              type="button"
+              className="main-menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                void onSaveProject();
+              }}
+            >
+              Save Project
+              <span className="main-menu-kbd">Ctrl+S</span>
+            </button>
+            <button
+              type="button"
+              className="main-menu-item accent"
+              onClick={() => {
+                setMenuOpen(false);
+                if (!clips.length) {
+                  setStatus("Add clips to the timeline before exporting");
+                  return;
+                }
+                setShowExportDialog(true);
+              }}
+            >
+              Export Video…
+            </button>
+            <div className="main-menu-sep" />
+            <button
+              type="button"
+              className="main-menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                void onGoHome();
+              }}
+            >
+              Projects Dashboard
+            </button>
+            <div className="main-menu-section">Help</div>
+            <button
+              type="button"
+              className="main-menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                setShortcutsOpen(true);
+              }}
+            >
+              Keyboard Shortcuts
+            </button>
           </div>
-        </div>
+        )}
       </div>
 
-      <div
-        className="flex items-center gap-0.5 border border-[var(--line)] bg-[var(--bg-2)] p-0.5"
-        style={{ borderRadius: "var(--radius)" }}
+      <button
+        type="button"
+        className="btn"
+        title="Back to projects"
+        onClick={() => void onGoHome()}
       >
-        <button className="btn btn-ghost" onClick={onGoHome} title="Projects home">
-          Home
-        </button>
-        <button className="btn btn-ghost" onClick={onNewProject} title="Create another project">
-          New
-        </button>
-        <button className="btn btn-ghost" onClick={onOpenProject}>
-          Open
-        </button>
-        <button className="btn btn-ghost" onClick={onSaveProject}>
-          Save
-        </button>
+        ← Projects
+      </button>
+
+      <div className="mx-1 h-4 w-px bg-[var(--line)]" />
+
+      <div className="min-w-0 max-w-[160px] truncate text-[12px] font-medium" title={projectName}>
+        {projectName}
+        {dirty ? "*" : ""}
       </div>
 
       <div className="mx-1 h-4 w-px bg-[var(--line)]" />
@@ -387,14 +358,6 @@ export function Toolbar() {
       >
         <IconTrash size={14} />
       </button>
-      <button
-        className="btn btn-icon"
-        onClick={doExtractAudio}
-        disabled={exporting}
-        title="Extract audio"
-      >
-        <IconAudio size={14} />
-      </button>
 
       <div className="mx-1 h-4 w-px bg-[var(--line)]" />
 
@@ -439,6 +402,18 @@ export function Toolbar() {
         )}
       </div>
 
+      <div
+        className={`autosave-pill ${dirty ? "pending" : "ok"}`}
+        title={
+          lastAutoSavedAt
+            ? `Last auto-save ${new Date(lastAutoSavedAt).toLocaleTimeString()}`
+            : "Auto-save runs while you edit"
+        }
+      >
+        <span className="autosave-dot" />
+        {autoLabel}
+      </div>
+
       <button
         className="btn btn-accent shrink-0"
         onClick={() => {
@@ -452,6 +427,15 @@ export function Toolbar() {
       >
         {exporting ? "Exporting…" : "Export"}
       </button>
+
+      <OpenProjectDialog
+        open={openProjectOpen}
+        onClose={() => setOpenProjectOpen(false)}
+      />
+      <ShortcutsDialog
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
     </header>
   );
 }

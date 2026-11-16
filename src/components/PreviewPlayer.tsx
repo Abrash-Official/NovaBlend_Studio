@@ -3,6 +3,7 @@ import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import {
   activeFxClipAt,
+  activeMaskClipAt,
   cssFilterForEffect,
   DEFAULT_TEXT,
   isStillClip,
@@ -337,7 +338,21 @@ export function PreviewPlayer() {
             const track = state.tracks.find((t) => t.index === clip.trackIndex);
             const src = clip.previewPath || clip.mediaPath;
             const video = ensureVideo(clip.id, src);
+            const clipLocalT = ph - clip.start;
+            let audioGain = Math.max(0, Math.min(2, clip.effects.volume ?? 1));
+            if (clip.effects.audioEnhance) audioGain *= 1.08;
+            const afi = clip.effects.audioFadeIn || 0;
+            const afo = clip.effects.audioFadeOut || 0;
+            if (afi > 0 && clipLocalT < afi) audioGain *= clipLocalT / afi;
+            if (afo > 0 && clipLocalT > clip.duration - afo) {
+              audioGain *= Math.max(0, (clip.duration - clipLocalT) / afo);
+            }
             video.muted = track?.muted || clip.id !== audibleId;
+            try {
+              video.volume = Math.min(1, audioGain);
+            } catch {
+              /* ignore */
+            }
 
             // Freeze / still: always hold the first frame (stretchable on timeline)
             const local = isStillClip(clip)
@@ -400,6 +415,7 @@ export function PreviewPlayer() {
               state.tracks.filter((t) => t.hidden && t.kind === "fx").map((t) => t.index),
             );
             const fxLayer = activeFxClipAt(state.clips, ph, hiddenFx);
+            const maskLayer = activeMaskClipAt(state.clips, ph, hiddenFx);
             const lookId = fxLayer?.effects?.effect || fx.effect || "none";
             // Prefer tunable values from the F1 clip when one is active
             const lookFx = fxLayer?.effects
@@ -418,10 +434,29 @@ export function PreviewPlayer() {
                   opacityKeyframes: fx.opacityKeyframes,
                 }
               : fx;
+            const maskFx =
+              maskLayer?.effects?.maskEnabled || maskLayer?.effects?.effect === "mask"
+                ? maskLayer.effects
+                : fx.maskEnabled
+                  ? fx
+                  : null;
 
             const opacity =
               lerp(fx.opacityKeyframes, localT, fx.opacity) *
               fadeMultiplier(localT, clip.duration, fx.fadeIn || 0, fx.fadeOut || 0);
+
+            const blend =
+              fx.blendMode === "screen"
+                ? "screen"
+                : fx.blendMode === "multiply"
+                  ? "multiply"
+                  : fx.blendMode === "overlay"
+                    ? "overlay"
+                    : fx.blendMode === "lighten"
+                      ? "lighten"
+                      : fx.blendMode === "color-dodge"
+                        ? "color-dodge"
+                        : "source-over";
 
             const drawVideo = (
               targetW: number,
@@ -431,13 +466,43 @@ export function PreviewPlayer() {
             ) => {
               ctx.save();
               ctx.globalAlpha = opacity;
+              ctx.globalCompositeOperation = blend as GlobalCompositeOperation;
               ctx.translate(x + targetW / 2, y + targetH / 2);
               ctx.rotate((fx.rotation * Math.PI) / 180);
               ctx.scale(fx.mirrorH ? -scale : scale, fx.mirrorV ? -scale : scale);
+              if (maskFx) {
+                const mx = -targetW / 2 + (maskFx.cropX || 0) * targetW;
+                const my = -targetH / 2 + (maskFx.cropY || 0) * targetH;
+                const mw = Math.max(2, (maskFx.cropW || 1) * targetW);
+                const mh = Math.max(2, (maskFx.cropH || 1) * targetH);
+                ctx.beginPath();
+                if ((maskFx.maskShape || "box") === "circle") {
+                  ctx.ellipse(
+                    mx + mw / 2,
+                    my + mh / 2,
+                    mw / 2,
+                    mh / 2,
+                    0,
+                    0,
+                    Math.PI * 2,
+                  );
+                } else {
+                  const r = Math.min(24, (maskFx.maskFeather || 0) * 0.6);
+                  if (typeof (ctx as CanvasRenderingContext2D).roundRect === "function") {
+                    ctx.roundRect(mx, my, mw, mh, r);
+                  } else {
+                    ctx.rect(mx, my, mw, mh);
+                  }
+                }
+                ctx.clip();
+              }
               ctx.filter = cssFilterForEffect(lookId, lookFx);
               ctx.drawImage(video, -targetW / 2, -targetH / 2, targetW, targetH);
               ctx.restore();
             };
+
+            const posX = fx.posX ?? 0;
+            const posY = fx.posY ?? 0;
 
             if (clip.trackIndex === 0) {
               if (state.backgroundBlur) {
@@ -452,7 +517,12 @@ export function PreviewPlayer() {
               const fit = Math.min(W / video.videoWidth, H / video.videoHeight);
               const dw = video.videoWidth * fit;
               const dh = video.videoHeight * fit;
-              drawVideo(dw, dh, (W - dw) / 2, (H - dh) / 2);
+              drawVideo(
+                dw,
+                dh,
+                (W - dw) / 2 + posX * W,
+                (H - dh) / 2 + posY * H,
+              );
 
               const vig = lookFx.vignetteAmount ?? 0;
               if (vig > 0.02) {
@@ -472,7 +542,12 @@ export function PreviewPlayer() {
             } else {
               const pipW = W * 0.35 * scale;
               const pipH = (video.videoHeight / video.videoWidth) * pipW;
-              drawVideo(pipW, pipH, W * fx.pipX, H * fx.pipY);
+              drawVideo(
+                pipW,
+                pipH,
+                W * (fx.pipX + posX),
+                H * (fx.pipY + posY),
+              );
             }
           }
         }

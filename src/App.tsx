@@ -6,6 +6,7 @@ import { PreviewPlayer } from "./components/PreviewPlayer";
 import { PropertiesPanel } from "./components/PropertiesPanel";
 import { Timeline } from "./components/Timeline";
 import { Toolbar } from "./components/Toolbar";
+import { useAutoSave } from "./hooks/useAutoSave";
 import { useEditorHotkeys } from "./hooks/useEditorHotkeys";
 import { useEditorStore } from "./store/editorStore";
 
@@ -75,6 +76,7 @@ export default function App() {
   }, [resizing, setLayoutSize]);
 
   useEditorHotkeys(view === "editor");
+  useAutoSave(view === "editor");
 
   if (view === "home") {
     return <HomeScreen />;

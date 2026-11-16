@@ -143,6 +143,7 @@ interface EditorState {
   layoutLeftWidth: number;
   layoutRightWidth: number;
   layoutTimelineHeight: number;
+  lastAutoSavedAt: number | null;
 
   setView: (v: AppView) => void;
   setLibraryTool: (t: LibraryTool) => void;
@@ -176,6 +177,7 @@ interface EditorState {
   addClipFromMedia: (mediaId: string, trackIndex?: number) => void;
   addTextClip: (textPatch?: Partial<TextStyle>) => void;
   addFxClip: (effectId: string) => void;
+  addMaskClip: (shape: "box" | "circle") => void;
   updateClip: (id: string, patch: Partial<TimelineClip>) => void;
   updateSelectedEffects: (patch: Partial<ClipEffects>) => void;
   updateSelectedText: (patch: Partial<TextStyle>) => void;
@@ -235,6 +237,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   layoutLeftWidth: LAYOUT_DEFAULTS.leftWidth,
   layoutRightWidth: LAYOUT_DEFAULTS.rightWidth,
   layoutTimelineHeight: LAYOUT_DEFAULTS.timelineHeight,
+  lastAutoSavedAt: null,
 
   setView: (v) => set({ view: v }),
   setLibraryTool: (t) => set({ libraryTool: t }),
@@ -504,6 +507,67 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selectedClipId: clip.id,
       dirty: true,
       status: `Added ${label} on F1 — tweak brightness/contrast in Properties`,
+    }));
+  },
+
+  addMaskClip: (shape) => {
+    const s = get();
+    const track = s.tracks.find((t) => t.kind === "fx");
+    if (!track) {
+      set({ status: "FX track missing" });
+      return;
+    }
+    if (track.locked) {
+      set({ status: "FX track is locked" });
+      return;
+    }
+    const selected = s.clips.find((c) => c.id === s.selectedClipId);
+    const video =
+      selected?.trackKind === "video"
+        ? selected
+        : s.clips.find(
+            (c) =>
+              c.trackKind === "video" &&
+              s.playhead >= c.start &&
+              s.playhead < c.start + c.duration,
+          );
+    if (!video) {
+      set({ status: "Select a video clip first, then add a mask" });
+      return;
+    }
+
+    const label = shape === "circle" ? "Mask · Circle" : "Mask · Box";
+    const clip: TimelineClip = {
+      id: uid("mask"),
+      mediaId: "",
+      mediaPath: "",
+      previewPath: "",
+      name: label,
+      trackIndex: track.index,
+      trackKind: "fx",
+      hasAudio: false,
+      start: video.start,
+      duration: Math.max(0.5, video.duration),
+      inPoint: 0,
+      outPoint: Math.max(0.5, video.duration),
+      effects: {
+        ...DEFAULT_EFFECTS(),
+        effect: "mask",
+        maskEnabled: true,
+        maskShape: shape,
+        maskFeather: 10,
+        cropX: 0.12,
+        cropY: 0.12,
+        cropW: 0.76,
+        cropH: 0.76,
+      },
+    };
+    set((st) => ({
+      clips: [...st.clips, clip],
+      selectedClipId: clip.id,
+      dirty: true,
+      libraryTool: "effects",
+      status: `Added ${label} on F1 — trim length · edit shape in Mask tab`,
     }));
   },
 

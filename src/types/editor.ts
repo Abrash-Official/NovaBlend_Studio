@@ -51,6 +51,17 @@ export interface ClipEffects {
   tint: number;
   /** Edge darkening 0–1 */
   vignetteAmount: number;
+  /** Soft blur for color grade (px-ish 0–20) */
+  softBlur: number;
+  /** Position offset from center, -1…1 */
+  posX: number;
+  posY: number;
+  /** Audio gain 0…2 (1 = unity) */
+  volume: number;
+  audioFadeIn: number;
+  audioFadeOut: number;
+  audioEnhance: boolean;
+  blendMode: "normal" | "screen" | "multiply" | "overlay" | "lighten" | "color-dodge";
   scale: number;
   rotation: number;
   opacity: number;
@@ -64,6 +75,8 @@ export interface ClipEffects {
   cropH: number;
   maskEnabled: boolean;
   maskFeather: number;
+  /** Mask geometry */
+  maskShape: "box" | "circle";
   motionBlur: number;
   effect: string;
   /** Seconds of fade-in at clip start */
@@ -136,6 +149,28 @@ export function activeFxClipAt(
   clips: TimelineClip[],
   t: number,
   hiddenTrackIndexes?: Set<number>,
+  opts?: { includeMask?: boolean },
+): TimelineClip | null {
+  const includeMask = opts?.includeMask ?? false;
+  const active = clips
+    .filter(
+      (c) =>
+        c.trackKind === "fx" &&
+        t >= c.start &&
+        t < c.start + c.duration &&
+        (!hiddenTrackIndexes || !hiddenTrackIndexes.has(c.trackIndex)) &&
+        (c.effects?.effect || "none") !== "none" &&
+        (includeMask || (c.effects?.effect || "") !== "mask"),
+    )
+    .sort((a, b) => a.trackIndex - b.trackIndex);
+  return active[active.length - 1] || null;
+}
+
+/** Active mask FX clip at time t (F1 "Mask · …" blocks). */
+export function activeMaskClipAt(
+  clips: TimelineClip[],
+  t: number,
+  hiddenTrackIndexes?: Set<number>,
 ): TimelineClip | null {
   const active = clips
     .filter(
@@ -144,7 +179,7 @@ export function activeFxClipAt(
         t >= c.start &&
         t < c.start + c.duration &&
         (!hiddenTrackIndexes || !hiddenTrackIndexes.has(c.trackIndex)) &&
-        (c.effects?.effect || "none") !== "none",
+        ((c.effects?.effect || "") === "mask" || !!c.effects?.maskEnabled),
     )
     .sort((a, b) => a.trackIndex - b.trackIndex);
   return active[active.length - 1] || null;
@@ -354,6 +389,14 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   temperature: 0,
   tint: 0,
   vignetteAmount: 0,
+  softBlur: 0,
+  posX: 0,
+  posY: 0,
+  volume: 1,
+  audioFadeIn: 0,
+  audioFadeOut: 0,
+  audioEnhance: false,
+  blendMode: "normal",
   scale: 1,
   rotation: 0,
   opacity: 1,
@@ -366,7 +409,8 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   cropW: 1,
   cropH: 1,
   maskEnabled: false,
-  maskFeather: 0,
+  maskFeather: 8,
+  maskShape: "box",
   motionBlur: 0,
   effect: "none",
   fadeIn: 0,
@@ -376,6 +420,15 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   scaleKeyframes: [],
   opacityKeyframes: [],
 });
+
+export const BLEND_MODES: ClipEffects["blendMode"][] = [
+  "normal",
+  "screen",
+  "multiply",
+  "overlay",
+  "lighten",
+  "color-dodge",
+];
 
 export const DEFAULT_TEXT = (): TextStyle => ({
   content: "Your text here",
@@ -467,6 +520,7 @@ export function cssFilterForEffect(effect: string, fx: ClipEffects): string {
 
   let look = `brightness(${1 + fx.brightness}) contrast(${fx.contrast * sharpBoost}) saturate(${fx.saturation})`;
   if (Math.abs(hue) > 0.5) look += ` hue-rotate(${hue.toFixed(1)}deg)`;
+  if ((fx.softBlur || 0) > 0.05) look += ` blur(${Math.min(12, fx.softBlur).toFixed(1)}px)`;
 
   switch (effect) {
     case "grayscale":
