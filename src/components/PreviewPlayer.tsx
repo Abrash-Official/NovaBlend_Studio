@@ -2,12 +2,31 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import {
+  activeFxEffectAt,
+  cssFilterForEffect,
+  DEFAULT_EFFECTS,
   DEFAULT_TEXT,
   isStillClip,
   isTextClip,
   TextStyle,
   TimelineClip,
 } from "../types/editor";
+
+function fadeMultiplier(
+  localT: number,
+  duration: number,
+  fadeIn: number,
+  fadeOut: number,
+) {
+  let m = 1;
+  const fi = Math.max(0, fadeIn || 0);
+  const fo = Math.max(0, fadeOut || 0);
+  if (fi > 0 && localT < fi) m = Math.min(m, localT / fi);
+  if (fo > 0 && localT > duration - fo) {
+    m = Math.min(m, Math.max(0, (duration - localT) / fo));
+  }
+  return Math.max(0, Math.min(1, m));
+}
 
 function lerp(
   keys: { time: number; value: number }[],
@@ -137,30 +156,32 @@ export function PreviewPlayer() {
     updateClip,
   } = useEditorStore();
 
+  const tracks = useEditorStore((s) => s.tracks);
+
   const activeVideoClips = useMemo(
     () =>
       clips
-        .filter(
-          (c) =>
-            c.trackKind === "video" &&
-            playhead >= c.start &&
-            playhead < c.start + c.duration,
-        )
+        .filter((c) => {
+          if (c.trackKind !== "video") return false;
+          if (playhead < c.start || playhead >= c.start + c.duration) return false;
+          const track = tracks.find((t) => t.index === c.trackIndex);
+          return !track?.hidden;
+        })
         .sort((a, b) => a.trackIndex - b.trackIndex),
-    [clips, playhead],
+    [clips, playhead, tracks],
   );
 
   const activeTextClips = useMemo(
     () =>
       clips
-        .filter(
-          (c) =>
-            isTextClip(c) &&
-            playhead >= c.start &&
-            playhead < c.start + c.duration,
-        )
+        .filter((c) => {
+          if (!isTextClip(c)) return false;
+          if (playhead < c.start || playhead >= c.start + c.duration) return false;
+          const track = tracks.find((t) => t.index === c.trackIndex);
+          return !track?.hidden;
+        })
         .sort((a, b) => a.trackIndex - b.trackIndex),
-    [clips, playhead],
+    [clips, playhead, tracks],
   );
 
   const dur = contentEnd();
@@ -175,19 +196,6 @@ export function PreviewPlayer() {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.code !== "Space") return;
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      e.preventDefault();
-      const s = useEditorStore.getState();
-      s.setPlaying(!s.isPlaying);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -294,12 +302,12 @@ export function PreviewPlayer() {
           const H = canvas.height;
           const ph = state.playhead;
           const active = state.clips
-            .filter(
-              (c) =>
-                c.trackKind === "video" &&
-                ph >= c.start &&
-                ph < c.start + c.duration,
-            )
+            .filter((c) => {
+              if (c.trackKind !== "video") return false;
+              if (ph < c.start || ph >= c.start + c.duration) return false;
+              const track = state.tracks.find((t) => t.index === c.trackIndex);
+              return !track?.hidden;
+            })
             .sort((a, b) => a.trackIndex - b.trackIndex);
 
           ctx.fillStyle = "#000";
@@ -313,7 +321,11 @@ export function PreviewPlayer() {
           }
 
           const audibleId =
-            active.find((c) => c.trackIndex === 0)?.id ?? active[0]?.id ?? null;
+            active.find((c) => {
+              const track = state.tracks.find((t) => t.index === c.trackIndex);
+              if (track?.muted) return false;
+              return c.hasAudio || c.trackIndex === 0;
+            })?.id ?? null;
 
           for (const [id, video] of videoRefs.current) {
             if (!active.some((c) => c.id === id)) {
@@ -323,9 +335,10 @@ export function PreviewPlayer() {
           }
 
           for (const clip of active) {
+            const track = state.tracks.find((t) => t.index === clip.trackIndex);
             const src = clip.previewPath || clip.mediaPath;
             const video = ensureVideo(clip.id, src);
-            video.muted = clip.id !== audibleId;
+            video.muted = track?.muted || clip.id !== audibleId;
 
             // Freeze / still: always hold the first frame (stretchable on timeline)
             const local = isStillClip(clip)
@@ -381,8 +394,20 @@ export function PreviewPlayer() {
             }
 
             const fx = clip.effects;
-            const scale = lerp(fx.scaleKeyframes, ph - clip.start, fx.scale);
-            const opacity = lerp(fx.opacityKeyframes, ph - clip.start, fx.opacity);
+            const localT = ph - clip.start;
+            const scale = lerp(fx.scaleKeyframes, localT, fx.scale);
+            const opacity =
+              lerp(fx.opacityKeyframes, localT, fx.opacity) *
+              fadeMultiplier(localT, clip.duration, fx.fadeIn || 0, fx.fadeOut || 0);
+
+            const hiddenFx = new Set(
+              state.tracks.filter((t) => t.hidden && t.kind === "fx").map((t) => t.index),
+            );
+            const layerFx = activeFxEffectAt(state.clips, ph, hiddenFx);
+            const lookId = layerFx || fx.effect || "none";
+            const lookFx = layerFx
+              ? { ...DEFAULT_EFFECTS(), effect: layerFx, brightness: fx.brightness, contrast: fx.contrast, saturation: fx.saturation }
+              : fx;
 
             const drawVideo = (
               targetW: number,
@@ -395,11 +420,7 @@ export function PreviewPlayer() {
               ctx.translate(x + targetW / 2, y + targetH / 2);
               ctx.rotate((fx.rotation * Math.PI) / 180);
               ctx.scale(fx.mirrorH ? -scale : scale, fx.mirrorV ? -scale : scale);
-              if (fx.effect === "grayscale") ctx.filter = "grayscale(1)";
-              else if (fx.effect === "sepia") ctx.filter = "sepia(1)";
-              else {
-                ctx.filter = `brightness(${1 + fx.brightness}) contrast(${fx.contrast}) saturate(${fx.saturation})`;
-              }
+              ctx.filter = cssFilterForEffect(lookId, lookFx);
               ctx.drawImage(video, -targetW / 2, -targetH / 2, targetW, targetH);
               ctx.restore();
             };
@@ -441,6 +462,11 @@ export function PreviewPlayer() {
     e.stopPropagation();
     setPlaying(false);
     selectClip(clip.id);
+    const state = useEditorStore.getState();
+    if (state.isClipLocked(clip.id)) {
+      state.setStatus("Track is locked");
+      return;
+    }
     const text = clip.text || DEFAULT_TEXT();
     setTextDrag({
       mode: "move",
@@ -457,6 +483,11 @@ export function PreviewPlayer() {
     e.stopPropagation();
     setPlaying(false);
     selectClip(clip.id);
+    const state = useEditorStore.getState();
+    if (state.isClipLocked(clip.id)) {
+      state.setStatus("Track is locked");
+      return;
+    }
     const text = clip.text || DEFAULT_TEXT();
     const frame = frameRef.current;
     if (!frame) return;
@@ -509,19 +540,24 @@ export function PreviewPlayer() {
             {activeTextClips.map((clip) => {
               const text = clip.text || DEFAULT_TEXT();
               const selected = clip.id === selectedClipId;
+              const locked = tracks.find((t) => t.index === clip.trackIndex)?.locked;
               return (
                 <div
                   key={clip.id}
-                  className={`preview-text-item${selected ? " selected" : ""}`}
+                  className={`preview-text-item${selected ? " selected" : ""}${locked ? " locked" : ""}`}
                   style={textCss(text, frameSize.h || projectHeight, projectHeight)}
                   onMouseDown={(e) => beginMove(e, clip)}
                   onDoubleClick={(e) => {
                     e.stopPropagation();
                     selectClip(clip.id);
                   }}
-                  title="Drag to move · use top handle to rotate"
+                  title={
+                    locked
+                      ? "Track locked — unlock T1 to edit"
+                      : "Drag to move · use top handle to rotate"
+                  }
                 >
-                  {selected && (
+                  {selected && !locked && (
                     <div
                       className="preview-text-rotate"
                       onMouseDown={(e) => beginRotate(e, clip)}

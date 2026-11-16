@@ -159,3 +159,112 @@ export function IconReveal(props: IconProps) {
     </Svg>
   );
 }
+
+export function IconMedia(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M10 9l5 3-5 3V9z" />
+    </Svg>
+  );
+}
+
+export function IconStickers(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3l2.2 4.5L19 8.2l-3.5 3.4.8 4.9L12 14.8 7.7 16.5l.8-4.9L5 8.2l4.8-.7L12 3z" />
+    </Svg>
+  );
+}
+
+export function IconEffects(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
+      <circle cx="12" cy="12" r="4.5" />
+    </Svg>
+  );
+}
+
+export function IconTransitions(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 7h7l4 5-4 5H4" />
+      <path d="M13 7h7v10h-7" />
+    </Svg>
+  );
+}
+
+export function IconCaptions(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M7 15h4M13 15h4M7 11h10" />
+    </Svg>
+  );
+}
+
+export function IconFilters(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 5h16l-6 7.5V19l-4-2v-4.5L4 5z" />
+    </Svg>
+  );
+}
+
+export function IconLock(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="5" y="11" width="14" height="10" rx="1.5" />
+      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+    </Svg>
+  );
+}
+
+export function IconUnlock(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="5" y="11" width="14" height="10" rx="1.5" />
+      <path d="M8 11V8a4 4 0 0 1 7.5-1.8" />
+    </Svg>
+  );
+}
+
+export function IconEye(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </Svg>
+  );
+}
+
+export function IconEyeOff(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 10.6a3 3 0 0 0 4.2 4.2" />
+      <path d="M9.9 5.2A10.6 10.6 0 0 1 12 5c6 0 10 7 10 7a17.4 17.4 0 0 1-4.2 4.5" />
+      <path d="M6.1 6.1C3.9 7.7 2 12 2 12a17.5 17.5 0 0 0 6.4 5.4" />
+    </Svg>
+  );
+}
+
+export function IconMute(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M11 5L6 9H3v6h3l5 4V5z" />
+      <path d="M23 9l-6 6M17 9l6 6" />
+    </Svg>
+  );
+}
+
+export function IconVolume(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M11 5L6 9H3v6h3l5 4V5z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+      <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    </Svg>
+  );
+}

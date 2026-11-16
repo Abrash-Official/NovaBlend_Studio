@@ -1,4 +1,4 @@
-export type TrackKind = "video" | "audio" | "text";
+export type TrackKind = "video" | "audio" | "text" | "fx";
 
 export type AspectRatioId = "16:9" | "9:16" | "1:1" | "4:5" | "21:9";
 
@@ -58,6 +58,10 @@ export interface ClipEffects {
   maskFeather: number;
   motionBlur: number;
   effect: string;
+  /** Seconds of fade-in at clip start */
+  fadeIn: number;
+  /** Seconds of fade-out at clip end */
+  fadeOut: number;
   pipX: number;
   pipY: number;
   scaleKeyframes: Keyframe[];
@@ -115,6 +119,31 @@ export function isStillClip(clip: TimelineClip): boolean {
   return !!clip.isStill || !!clip.stillPath;
 }
 
+export function isFxClip(clip: TimelineClip): boolean {
+  return clip.trackKind === "fx";
+}
+
+/** Active filter/effect id from overlapping FX clips at time t (topmost wins). */
+export function activeFxEffectAt(
+  clips: TimelineClip[],
+  t: number,
+  hiddenTrackIndexes?: Set<number>,
+): string | null {
+  const active = clips
+    .filter(
+      (c) =>
+        c.trackKind === "fx" &&
+        t >= c.start &&
+        t < c.start + c.duration &&
+        (!hiddenTrackIndexes || !hiddenTrackIndexes.has(c.trackIndex)),
+    )
+    .sort((a, b) => a.trackIndex - b.trackIndex);
+  const top = active[active.length - 1];
+  if (!top) return null;
+  const id = top.effects?.effect || "none";
+  return id === "none" ? null : id;
+}
+
 export type ExportFps = 25 | 30 | 60;
 
 export interface Track {
@@ -122,7 +151,19 @@ export interface Track {
   kind: TrackKind;
   name: string;
   index: number;
+  muted?: boolean;
+  hidden?: boolean;
+  locked?: boolean;
 }
+
+export type LibraryTool =
+  | "media"
+  | "text"
+  | "stickers"
+  | "effects"
+  | "transitions"
+  | "captions"
+  | "filters";
 
 export interface ProjectSnapshot {
   version: 1;
@@ -140,6 +181,7 @@ export interface ProjectSnapshot {
   zoom: number;
   media: MediaItem[];
   clips: TimelineClip[];
+  tracks?: Track[];
 }
 
 export const DEFAULT_EFFECTS = (): ClipEffects => ({
@@ -161,6 +203,8 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   maskFeather: 0,
   motionBlur: 0,
   effect: "none",
+  fadeIn: 0,
+  fadeOut: 0,
   pipX: 0.05,
   pipY: 0.05,
   scaleKeyframes: [],
@@ -220,9 +264,63 @@ export const ASPECT_PRESETS: Record<
 };
 
 export const EFFECT_PRESETS = [
-  { id: "none", label: "None" },
-  { id: "grayscale", label: "Grayscale" },
-  { id: "sepia", label: "Sepia" },
-  { id: "vignette", label: "Vignette" },
-  { id: "sharpen", label: "Sharpen" },
+  { id: "none", label: "None", group: "essentials" },
+  { id: "grayscale", label: "Grayscale", group: "essentials" },
+  { id: "sepia", label: "Sepia", group: "essentials" },
+  { id: "vignette", label: "Vignette", group: "essentials" },
+  { id: "sharpen", label: "Sharpen", group: "essentials" },
+  { id: "teal_orange", label: "Teal & Orange", group: "gaming" },
+  { id: "cyberpunk", label: "Cyberpunk Neon", group: "gaming" },
+  { id: "noir", label: "Noir Contrast", group: "gaming" },
+  { id: "warm_glow", label: "Warm Glow", group: "gaming" },
+  { id: "cold_blue", label: "Cold Blue", group: "gaming" },
+  { id: "vhs", label: "VHS Retro", group: "gaming" },
+  { id: "bloom", label: "Soft Bloom", group: "gaming" },
+  { id: "high_sat", label: "Hyper Saturation", group: "gaming" },
 ] as const;
+
+export const TRANSITION_PRESETS = [
+  { id: "none", label: "None", fadeIn: 0, fadeOut: 0 },
+  { id: "fade", label: "Fade", fadeIn: 0.4, fadeOut: 0.4 },
+  { id: "fade_in", label: "Fade In", fadeIn: 0.6, fadeOut: 0 },
+  { id: "fade_out", label: "Fade Out", fadeIn: 0, fadeOut: 0.6 },
+  { id: "cross_soft", label: "Soft Cross", fadeIn: 0.8, fadeOut: 0.8 },
+] as const;
+
+export const STICKER_PRESETS = [
+  "🔥", "💥", "✨", "⭐", "🎮", "🏆", "💀", "😎", "😂", "❤️",
+  "💯", "⚡", "🎯", "🚀", "👑", "😈", "🙌", "👏", "🎶", "📌",
+] as const;
+
+/** CSS filter string for preview (export uses FFmpeg equivalents). */
+export function cssFilterForEffect(effect: string, fx: ClipEffects): string {
+  const base = `brightness(${1 + fx.brightness}) contrast(${fx.contrast}) saturate(${fx.saturation})`;
+  switch (effect) {
+    case "grayscale":
+      return `${base} grayscale(1)`;
+    case "sepia":
+      return `${base} sepia(0.85)`;
+    case "vignette":
+      return `${base}`;
+    case "sharpen":
+      return `${base} contrast(${fx.contrast * 1.08})`;
+    case "teal_orange":
+      return `brightness(${1.05 + fx.brightness}) contrast(${fx.contrast * 1.15}) saturate(${fx.saturation * 1.35}) hue-rotate(-12deg)`;
+    case "cyberpunk":
+      return `brightness(${1.08 + fx.brightness}) contrast(${fx.contrast * 1.25}) saturate(${fx.saturation * 1.6}) hue-rotate(200deg)`;
+    case "noir":
+      return `grayscale(1) contrast(${fx.contrast * 1.4}) brightness(${0.95 + fx.brightness})`;
+    case "warm_glow":
+      return `brightness(${1.1 + fx.brightness}) contrast(${fx.contrast}) saturate(${fx.saturation * 1.2}) sepia(0.25)`;
+    case "cold_blue":
+      return `brightness(${1.02 + fx.brightness}) contrast(${fx.contrast * 1.1}) saturate(${fx.saturation * 1.15}) hue-rotate(190deg)`;
+    case "vhs":
+      return `contrast(${fx.contrast * 1.2}) saturate(${fx.saturation * 0.85}) brightness(${1 + fx.brightness}) hue-rotate(8deg)`;
+    case "bloom":
+      return `brightness(${1.12 + fx.brightness}) contrast(${fx.contrast * 0.95}) saturate(${fx.saturation * 1.1}) blur(0.3px)`;
+    case "high_sat":
+      return `brightness(${1.05 + fx.brightness}) contrast(${fx.contrast * 1.15}) saturate(${fx.saturation * 1.8})`;
+    default:
+      return base;
+  }
+}

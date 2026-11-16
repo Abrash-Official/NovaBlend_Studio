@@ -3,6 +3,7 @@ import { useEditorStore } from "../store/editorStore";
 import {
   DEFAULT_TEXT,
   EFFECT_PRESETS,
+  isFxClip,
   isTextClip,
   TEXT_FONTS,
   TextAlign,
@@ -123,6 +124,7 @@ function TextPropertiesPanel({
   clipName,
   duration,
   text,
+  locked,
   updateSelectedText,
   trimSelected,
   addTextClip,
@@ -131,6 +133,7 @@ function TextPropertiesPanel({
   clipName: string;
   duration: number;
   text: TextStyle;
+  locked: boolean;
   updateSelectedText: (patch: Partial<TextStyle>) => void;
   trimSelected: (edge: "in" | "out", delta: number) => void;
   addTextClip: () => void;
@@ -141,6 +144,11 @@ function TextPropertiesPanel({
 
   function toggle(id: TextSectionId) {
     setOpenSection(id);
+  }
+
+  function patchText(p: Partial<TextStyle>) {
+    if (locked) return;
+    updateSelectedText(p);
   }
 
   const fontHint = `${text.fontFamily} · ${Math.round(text.fontSize)}px${text.bold ? " · Bold" : ""}${text.italic ? " · Italic" : ""}`;
@@ -155,25 +163,33 @@ function TextPropertiesPanel({
 
   return (
     <aside className="panel flex h-full flex-col overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-[var(--line)] px-3 py-2">
-        <IconText size={14} />
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+      <div className="flex items-center gap-2 border-b border-[var(--line)] px-2 py-2 sm:px-3">
+        <IconText size={14} className="shrink-0" />
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <div className="truncate text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
             Text Properties
           </div>
-          <div className="truncate text-[11px] text-[var(--muted)]">{clipName}</div>
+          <div className="truncate text-[11px] text-[var(--muted)]" title={clipName}>
+            {clipName}
+          </div>
         </div>
         <button
           type="button"
-          className="btn btn-icon btn-danger h-7 w-7 p-0"
-          title="Delete text clip"
+          className="btn btn-icon btn-danger h-7 w-7 shrink-0 p-0"
+          title={locked ? "Unlock track to delete" : "Delete text clip (Del)"}
+          disabled={locked}
           onClick={() => removeSelectedClip()}
         >
           <IconTrash size={13} />
         </button>
       </div>
 
-      <div className="flex-1 overflow-auto p-2">
+      <div className={`flex-1 overflow-auto p-2 ${locked ? "pointer-events-none opacity-55" : ""}`}>
+        {locked && (
+          <p className="prop-guide mb-2 px-1 text-[var(--warn)]">
+            Track locked — unlock T1 on the timeline to edit.
+          </p>
+        )}
         <p className="prop-guide mb-2 px-1">
           Open one section at a time. Drag text on the preview to place it.
         </p>
@@ -188,7 +204,7 @@ function TextPropertiesPanel({
           <textarea
             className="btn mb-2 min-h-[72px] w-full resize-y text-left"
             value={text.content}
-            onChange={(e) => updateSelectedText({ content: e.target.value })}
+            onChange={(e) => patchText({ content: e.target.value })}
             placeholder="Type your text…"
           />
           <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--muted)]">
@@ -202,7 +218,7 @@ function TextPropertiesPanel({
                 className="btn px-2 text-sm"
                 title="Insert emoji"
                 onClick={() =>
-                  updateSelectedText({ content: `${text.content}${emoji}` })
+                  patchText({ content: `${text.content}${emoji}` })
                 }
               >
                 {emoji}
@@ -222,7 +238,7 @@ function TextPropertiesPanel({
           <select
             className="btn mb-3 w-full"
             value={text.fontFamily}
-            onChange={(e) => updateSelectedText({ fontFamily: e.target.value })}
+            onChange={(e) => patchText({ fontFamily: e.target.value })}
           >
             {TEXT_FONTS.map((f) => (
               <option key={f} value={f} style={{ fontFamily: f }}>
@@ -237,21 +253,21 @@ function TextPropertiesPanel({
             max={220}
             step={1}
             value={text.fontSize}
-            onChange={(fontSize) => updateSelectedText({ fontSize })}
+            onChange={(fontSize) => patchText({ fontSize })}
           />
 
           <div className="mb-3 grid grid-cols-2 gap-2">
             <button
               type="button"
               className={`btn ${text.bold ? "btn-accent" : ""}`}
-              onClick={() => updateSelectedText({ bold: !text.bold })}
+              onClick={() => patchText({ bold: !text.bold })}
             >
               Bold
             </button>
             <button
               type="button"
               className={`btn italic ${text.italic ? "btn-accent" : ""}`}
-              onClick={() => updateSelectedText({ italic: !text.italic })}
+              onClick={() => patchText({ italic: !text.italic })}
             >
               Italic
             </button>
@@ -264,7 +280,7 @@ function TextPropertiesPanel({
                 key={a}
                 type="button"
                 className={`btn flex-1 ${text.align === a ? "btn-accent" : ""}`}
-                onClick={() => updateSelectedText({ align: a })}
+                onClick={() => patchText({ align: a })}
               >
                 {a}
               </button>
@@ -277,7 +293,7 @@ function TextPropertiesPanel({
             max={40}
             step={0.5}
             value={text.letterSpacing}
-            onChange={(letterSpacing) => updateSelectedText({ letterSpacing })}
+            onChange={(letterSpacing) => patchText({ letterSpacing })}
           />
           <SliderRow
             label="Line height"
@@ -285,7 +301,7 @@ function TextPropertiesPanel({
             max={2.5}
             step={0.05}
             value={text.lineHeight}
-            onChange={(lineHeight) => updateSelectedText({ lineHeight })}
+            onChange={(lineHeight) => patchText({ lineHeight })}
           />
         </TextSection>
 
@@ -299,12 +315,12 @@ function TextPropertiesPanel({
           <ColorRow
             label="Fill color"
             value={text.color}
-            onChange={(color) => updateSelectedText({ color })}
+            onChange={(color) => patchText({ color })}
           />
           <ColorRow
             label="Outline color"
             value={text.strokeColor}
-            onChange={(strokeColor) => updateSelectedText({ strokeColor })}
+            onChange={(strokeColor) => patchText({ strokeColor })}
           />
           <SliderRow
             label="Outline width"
@@ -312,7 +328,7 @@ function TextPropertiesPanel({
             max={24}
             step={0.5}
             value={text.strokeWidth}
-            onChange={(strokeWidth) => updateSelectedText({ strokeWidth })}
+            onChange={(strokeWidth) => patchText({ strokeWidth })}
           />
         </TextSection>
 
@@ -327,7 +343,7 @@ function TextPropertiesPanel({
           <ColorRow
             label="Shadow color"
             value={text.shadowColor.startsWith("#") ? text.shadowColor : "#000000"}
-            onChange={(shadowColor) => updateSelectedText({ shadowColor })}
+            onChange={(shadowColor) => patchText({ shadowColor })}
           />
           <SliderRow
             label="Blur"
@@ -335,7 +351,7 @@ function TextPropertiesPanel({
             max={40}
             step={1}
             value={text.shadowBlur}
-            onChange={(shadowBlur) => updateSelectedText({ shadowBlur })}
+            onChange={(shadowBlur) => patchText({ shadowBlur })}
           />
           <SliderRow
             label="Offset X"
@@ -343,7 +359,7 @@ function TextPropertiesPanel({
             max={30}
             step={1}
             value={text.shadowOffsetX}
-            onChange={(shadowOffsetX) => updateSelectedText({ shadowOffsetX })}
+            onChange={(shadowOffsetX) => patchText({ shadowOffsetX })}
           />
           <SliderRow
             label="Offset Y"
@@ -351,7 +367,7 @@ function TextPropertiesPanel({
             max={30}
             step={1}
             value={text.shadowOffsetY}
-            onChange={(shadowOffsetY) => updateSelectedText({ shadowOffsetY })}
+            onChange={(shadowOffsetY) => patchText({ shadowOffsetY })}
           />
 
           <div className="field-label mt-1">Highlight box</div>
@@ -361,7 +377,7 @@ function TextPropertiesPanel({
           <ColorRow
             label="Box color"
             value={text.backgroundColor}
-            onChange={(backgroundColor) => updateSelectedText({ backgroundColor })}
+            onChange={(backgroundColor) => patchText({ backgroundColor })}
           />
           <SliderRow
             label="Box opacity"
@@ -370,7 +386,7 @@ function TextPropertiesPanel({
             step={0.01}
             value={text.backgroundOpacity}
             onChange={(backgroundOpacity) =>
-              updateSelectedText({ backgroundOpacity })
+              patchText({ backgroundOpacity })
             }
           />
         </TextSection>
@@ -391,7 +407,7 @@ function TextPropertiesPanel({
             max={1}
             step={0.01}
             value={text.x}
-            onChange={(x) => updateSelectedText({ x })}
+            onChange={(x) => patchText({ x })}
           />
           <SliderRow
             label="Position Y"
@@ -399,7 +415,7 @@ function TextPropertiesPanel({
             max={1}
             step={0.01}
             value={text.y}
-            onChange={(y) => updateSelectedText({ y })}
+            onChange={(y) => patchText({ y })}
           />
           <SliderRow
             label="Rotation"
@@ -407,7 +423,7 @@ function TextPropertiesPanel({
             max={180}
             step={1}
             value={text.rotation}
-            onChange={(rotation) => updateSelectedText({ rotation })}
+            onChange={(rotation) => patchText({ rotation })}
           />
           <SliderRow
             label="Opacity"
@@ -415,7 +431,7 @@ function TextPropertiesPanel({
             max={1}
             step={0.01}
             value={text.opacity}
-            onChange={(opacity) => updateSelectedText({ opacity })}
+            onChange={(opacity) => patchText({ opacity })}
           />
         </TextSection>
 
@@ -470,6 +486,7 @@ export function PropertiesPanel() {
   const addTextClip = useEditorStore((s) => s.addTextClip);
   const removeSelectedClip = useEditorStore((s) => s.removeSelectedClip);
   const playhead = useEditorStore((s) => s.playhead);
+  const tracks = useEditorStore((s) => s.tracks);
 
   const clip = clips.find((c) => c.id === selectedClipId);
   const fx = clip?.effects;
@@ -501,11 +518,65 @@ export function PropertiesPanel() {
         clipName={clip.name}
         duration={clip.duration}
         text={clip.text || DEFAULT_TEXT()}
+        locked={!!tracks.find((t) => t.index === clip.trackIndex)?.locked}
         updateSelectedText={updateSelectedText}
         trimSelected={trimSelected}
         addTextClip={addTextClip}
         removeSelectedClip={removeSelectedClip}
       />
+    );
+  }
+
+  if (isFxClip(clip)) {
+    return (
+      <aside className="panel flex h-full flex-col overflow-hidden">
+        <div className="border-b border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+          FX Layer
+        </div>
+        <div className="flex-1 space-y-3 overflow-auto p-3">
+          <div className="truncate text-sm font-medium">{clip.name}</div>
+          <div className="text-[11px] text-[var(--muted)]">
+            Purple F1 blocks control when a filter/effect is active. Trim the ends on the
+            timeline to change length, or drag to move it.
+          </div>
+          <div className="field-label">Look</div>
+          <select
+            className="btn w-full"
+            value={fx.effect}
+            onChange={(e) => {
+              const id = e.target.value;
+              const label =
+                EFFECT_PRESETS.find((p) => p.id === id)?.label || id;
+              updateSelectedEffects({ effect: id });
+              updateClip(clip.id, { name: label });
+            }}
+          >
+            {EFFECT_PRESETS.filter((p) => p.id !== "none").map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <div className="field-label">Duration {clip.duration.toFixed(2)}s</div>
+          <div className="flex flex-wrap gap-1">
+            <button className="btn" onClick={() => trimSelected("in", -0.1)}>
+              In −0.1
+            </button>
+            <button className="btn" onClick={() => trimSelected("in", 0.1)}>
+              In +0.1
+            </button>
+            <button className="btn" onClick={() => trimSelected("out", -0.1)}>
+              Out −0.1
+            </button>
+            <button className="btn" onClick={() => trimSelected("out", 0.1)}>
+              Out +0.1
+            </button>
+          </div>
+          <button className="btn btn-danger w-full" onClick={removeSelectedClip}>
+            Remove FX
+          </button>
+        </div>
+      </aside>
     );
   }
 

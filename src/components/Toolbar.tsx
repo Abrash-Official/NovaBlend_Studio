@@ -14,8 +14,8 @@ import {
   getProjectsDir,
   listProjectFiles,
   loadProjectSnapshot,
-  saveProjectSnapshot,
 } from "../lib/projects";
+import { saveCurrentProject } from "../lib/saveProject";
 import {
   IconAdd,
   IconAudio,
@@ -56,10 +56,8 @@ export function Toolbar() {
     setStatus,
     selectedClipId,
     projectName,
-    setProjectName,
     dirty,
     loadSnapshot,
-    toSnapshot,
     bumpProcessing,
     setView,
     setPlaying,
@@ -84,18 +82,6 @@ export function Toolbar() {
       unlisten?.();
     };
   }, [setStatus, updateMedia]);
-
-  async function persistProject() {
-    const snap = toSnapshot();
-    const saved = await saveProjectSnapshot(snap);
-    const dir = await getProjectsDir();
-    useEditorStore.setState({
-      projectPath: saved.filePath || null,
-      projectName: saved.name,
-      dirty: false,
-      status: `Saved to ${dir}`,
-    });
-  }
 
   async function onGoHome() {
     if (dirty) {
@@ -122,19 +108,7 @@ export function Toolbar() {
   }
 
   async function onSaveProject() {
-    try {
-      let name = projectName;
-      if (!name || name === "Untitled Project") {
-        const typed = window.prompt("Name this project", "My Video 1");
-        if (!typed) return;
-        name = typed;
-        setProjectName(name);
-      }
-      useEditorStore.setState({ projectName: name });
-      await persistProject();
-    } catch (e) {
-      setStatus(`Save failed: ${e}`);
-    }
+    await saveCurrentProject();
   }
 
   async function onOpenProject() {
@@ -389,7 +363,10 @@ export function Toolbar() {
       <button
         className="btn btn-icon btn-text-tool"
         title="Add text overlay"
-        onClick={() => addTextClip()}
+        onClick={() => {
+          useEditorStore.getState().setLibraryTool("text");
+          addTextClip();
+        }}
       >
         <IconText size={14} />
         Text

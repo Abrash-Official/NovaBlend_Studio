@@ -38,6 +38,8 @@ function toBackendEffects(fx: ClipEffects) {
     maskFeather: fx.maskFeather,
     motionBlur: fx.motionBlur,
     effect: fx.effect,
+    fadeIn: fx.fadeIn || 0,
+    fadeOut: fx.fadeOut || 0,
     pipX: fx.pipX,
     pipY: fx.pipY,
     scaleKeyframes: fx.scaleKeyframes,

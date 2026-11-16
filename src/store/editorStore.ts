@@ -5,8 +5,11 @@ import {
   ClipEffects,
   DEFAULT_EFFECTS,
   DEFAULT_TEXT,
+  EFFECT_PRESETS,
+  isFxClip,
   isStillClip,
   isTextClip,
+  LibraryTool,
   MediaItem,
   ProjectSnapshot,
   TextStyle,
@@ -19,15 +22,65 @@ function uid(prefix = "id") {
 }
 
 const defaultTracks: Track[] = [
-  { id: "v1", kind: "video", name: "V1", index: 0 },
-  { id: "t1", kind: "text", name: "T1 Text", index: 1 },
-  { id: "a1", kind: "audio", name: "A1", index: 2 },
+  { id: "v1", kind: "video", name: "V1", index: 0, muted: false, hidden: false, locked: false },
+  { id: "f1", kind: "fx", name: "F1 FX", index: 1, muted: false, hidden: false, locked: false },
+  { id: "t1", kind: "text", name: "T1 Text", index: 2, muted: false, hidden: false, locked: false },
+  { id: "a1", kind: "audio", name: "A1", index: 3, muted: false, hidden: false, locked: false },
 ];
 
+const LAYOUT_DEFAULTS = { leftWidth: 300, rightWidth: 280, timelineHeight: 280 };
+
+function normalizeTracks(tracks?: Track[]): Track[] {
+  if (!tracks?.length) return defaultTracks.map((t) => ({ ...t }));
+  return defaultTracks.map((def) => {
+    const found = tracks.find((t) => t.id === def.id || t.kind === def.kind);
+    return {
+      ...def,
+      ...(found || {}),
+      id: def.id,
+      kind: def.kind,
+      name: def.name,
+      index: def.index,
+      muted: found?.muted ?? false,
+      hidden: found?.hidden ?? false,
+      locked: found?.locked ?? false,
+    };
+  });
+}
+
+function normalizeEffects(fx?: Partial<ClipEffects>): ClipEffects {
+  return { ...DEFAULT_EFFECTS(), ...(fx || {}) };
+}
+
+function trackLockedForClip(
+  tracks: Track[],
+  clips: TimelineClip[],
+  clipId: string,
+): boolean {
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip) return false;
+  return !!tracks.find((t) => t.index === clip.trackIndex)?.locked;
+}
+
 function normalizeClip(c: TimelineClip): TimelineClip {
-  if (!isTextClip(c) && c.trackKind !== "text") return c;
+  const effects = normalizeEffects(c.effects);
+  if (isFxClip(c) || c.trackKind === "fx") {
+    return {
+      ...c,
+      effects,
+      trackKind: "fx",
+      hasAudio: false,
+      mediaId: c.mediaId || "",
+      mediaPath: c.mediaPath || "",
+      previewPath: c.previewPath || "",
+    };
+  }
+  if (!isTextClip(c) && c.trackKind !== "text") {
+    return { ...c, effects };
+  }
   return {
     ...c,
+    effects,
     trackKind: "text",
     hasAudio: false,
     mediaId: c.mediaId || "",
@@ -37,21 +90,24 @@ function normalizeClip(c: TimelineClip): TimelineClip {
   };
 }
 
-/** Remap clips from older layouts (V2 Overlay removed) onto V1 / T1 / A1. */
+/** Remap clips from older layouts onto V1 / F1 / T1 / A1. */
 function migrateClipTracks(clips: TimelineClip[]): TimelineClip[] {
   const videoIdx = defaultTracks.find((t) => t.kind === "video")!.index;
+  const fxIdx = defaultTracks.find((t) => t.kind === "fx")!.index;
   const textIdx = defaultTracks.find((t) => t.kind === "text")!.index;
   const audioIdx = defaultTracks.find((t) => t.kind === "audio")!.index;
 
   return clips.map((c) => {
     const base = normalizeClip(c);
+    if (isFxClip(base) || base.trackKind === "fx") {
+      return { ...base, trackIndex: fxIdx, trackKind: "fx" as const };
+    }
     if (isTextClip(base) || base.trackKind === "text") {
       return { ...base, trackIndex: textIdx, trackKind: "text" as const };
     }
     if (base.trackKind === "audio") {
       return { ...base, trackIndex: audioIdx, trackKind: "audio" as const };
     }
-    // All video (including old V2 overlay) lands on V1
     return { ...base, trackIndex: videoIdx, trackKind: "video" as const };
   });
 }
@@ -82,8 +138,22 @@ interface EditorState {
   exportMessage: string;
   showExportDialog: boolean;
   processingCount: number;
+  libraryTool: LibraryTool;
+  layoutLeftWidth: number;
+  layoutRightWidth: number;
+  layoutTimelineHeight: number;
 
   setView: (v: AppView) => void;
+  setLibraryTool: (t: LibraryTool) => void;
+  updateTrack: (index: number, patch: Partial<Track>) => void;
+  setLayoutSize: (
+    patch: Partial<{
+      leftWidth: number;
+      rightWidth: number;
+      timelineHeight: number;
+    }>,
+  ) => void;
+  isClipLocked: (clipId: string) => boolean;
   setStatus: (s: string) => void;
   setPlayhead: (t: number) => void;
   setPlaying: (v: boolean) => void;
@@ -103,7 +173,8 @@ interface EditorState {
   updateMedia: (id: string, patch: Partial<MediaItem>) => void;
   removeMedia: (id: string) => void;
   addClipFromMedia: (mediaId: string, trackIndex?: number) => void;
-  addTextClip: () => void;
+  addTextClip: (textPatch?: Partial<TextStyle>) => void;
+  addFxClip: (effectId: string) => void;
   updateClip: (id: string, patch: Partial<TimelineClip>) => void;
   updateSelectedEffects: (patch: Partial<ClipEffects>) => void;
   updateSelectedText: (patch: Partial<TextStyle>) => void;
@@ -159,8 +230,37 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   exportMessage: "",
   showExportDialog: false,
   processingCount: 0,
+  libraryTool: "media",
+  layoutLeftWidth: LAYOUT_DEFAULTS.leftWidth,
+  layoutRightWidth: LAYOUT_DEFAULTS.rightWidth,
+  layoutTimelineHeight: LAYOUT_DEFAULTS.timelineHeight,
 
   setView: (v) => set({ view: v }),
+  setLibraryTool: (t) => set({ libraryTool: t }),
+  updateTrack: (index, patch) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) => (t.index === index ? { ...t, ...patch } : t)),
+      dirty: true,
+    })),
+  setLayoutSize: (patch) =>
+    set((s) => ({
+      layoutLeftWidth:
+        patch.leftWidth !== undefined
+          ? Math.min(520, Math.max(220, patch.leftWidth))
+          : s.layoutLeftWidth,
+      layoutRightWidth:
+        patch.rightWidth !== undefined
+          ? Math.min(480, Math.max(200, patch.rightWidth))
+          : s.layoutRightWidth,
+      layoutTimelineHeight:
+        patch.timelineHeight !== undefined
+          ? Math.min(560, Math.max(180, patch.timelineHeight))
+          : s.layoutTimelineHeight,
+    })),
+  isClipLocked: (clipId) => {
+    const s = get();
+    return trackLockedForClip(s.tracks, s.clips, clipId);
+  },
   setStatus: (s) => set({ status: s }),
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
   setPlaying: (v) => set({ isPlaying: v }),
@@ -275,17 +375,24 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
   },
 
-  addTextClip: () => {
+  addTextClip: (textPatch) => {
     const tracks = get().tracks;
     const track = tracks.find((t) => t.kind === "text") ?? {
       id: "t1",
       kind: "text" as const,
       name: "T1 Text",
       index: 2,
+      muted: false,
+      hidden: false,
+      locked: false,
     };
+    if (track.locked) {
+      set({ status: "Text track is locked" });
+      return;
+    }
     const playhead = get().playhead;
     const duration = 5;
-    const text = DEFAULT_TEXT();
+    const text = { ...DEFAULT_TEXT(), ...(textPatch || {}) };
     const clip: TimelineClip = {
       id: uid("text"),
       mediaId: "",
@@ -313,9 +420,100 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
   },
 
-  updateClip: (id, patch) =>
-    set((s) => ({
-      clips: s.clips.map((c) => {
+  addFxClip: (effectId) => {
+    const s = get();
+    const track = s.tracks.find((t) => t.kind === "fx");
+    if (!track) {
+      set({ status: "FX track missing" });
+      return;
+    }
+    if (track.locked) {
+      set({ status: "FX track is locked" });
+      return;
+    }
+    if (effectId === "none") {
+      set({ status: "Pick a filter or effect to add on F1" });
+      return;
+    }
+    const selected = s.clips.find((c) => c.id === s.selectedClipId);
+    const videoAtPlayhead = s.clips.find(
+      (c) =>
+        c.trackKind === "video" &&
+        s.playhead >= c.start &&
+        s.playhead < c.start + c.duration,
+    );
+    const anchor =
+      selected?.trackKind === "video"
+        ? selected
+        : selected?.trackKind === "fx"
+          ? selected
+          : videoAtPlayhead;
+
+    const start =
+      selected?.trackKind === "fx"
+        ? selected.start
+        : anchor && anchor.trackKind === "video"
+          ? anchor.start
+          : Math.max(0, s.playhead);
+    const duration =
+      selected?.trackKind === "fx"
+        ? selected.duration
+        : anchor && anchor.trackKind === "video"
+          ? Math.max(0.5, anchor.duration)
+          : 3;
+
+    const label =
+      EFFECT_PRESETS.find((p) => p.id === effectId)?.label || effectId;
+
+    // Replacing effect on an existing selected FX clip
+    if (selected?.trackKind === "fx") {
+      set((st) => ({
+        clips: st.clips.map((c) =>
+          c.id === selected.id
+            ? {
+                ...c,
+                name: label,
+                effects: { ...c.effects, effect: effectId },
+              }
+            : c,
+        ),
+        dirty: true,
+        status: `Updated FX: ${label} — trim on F1 to set length`,
+      }));
+      return;
+    }
+
+    const clip: TimelineClip = {
+      id: uid("fx"),
+      mediaId: "",
+      mediaPath: "",
+      previewPath: "",
+      name: label,
+      trackIndex: track.index,
+      trackKind: "fx",
+      hasAudio: false,
+      start,
+      duration,
+      inPoint: 0,
+      outPoint: duration,
+      effects: { ...DEFAULT_EFFECTS(), effect: effectId },
+    };
+    set((st) => ({
+      clips: [...st.clips, clip],
+      selectedClipId: clip.id,
+      dirty: true,
+      status: `Added ${label} on F1 — drag ends to change duration`,
+    }));
+  },
+
+  updateClip: (id, patch) => {
+    const s = get();
+    if (trackLockedForClip(s.tracks, s.clips, id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
+    set((st) => ({
+      clips: st.clips.map((c) => {
         if (c.id !== id) return c;
         const next = { ...c, ...patch };
         if (patch.text) {
@@ -335,11 +533,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         return next;
       }),
       dirty: true,
-    })),
+    }));
+  },
 
   updateSelectedEffects: (patch) => {
     const id = get().selectedClipId;
     if (!id) return;
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
     set((s) => ({
       clips: s.clips.map((c) =>
         c.id === id ? { ...c, effects: { ...c.effects, ...patch } } : c,
@@ -351,6 +554,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   updateSelectedText: (patch) => {
     const id = get().selectedClipId;
     if (!id) return;
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
     set((s) => ({
       clips: s.clips.map((c) => {
         if (c.id !== id || !isTextClip(c)) return c;
@@ -375,6 +582,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   removeClip: (id) => {
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked — unlock to delete" });
+      return;
+    }
     set((s) => ({
       clips: s.clips.filter((c) => c.id !== id),
       selectedClipId: s.selectedClipId === id ? null : s.selectedClipId,
@@ -393,6 +604,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { playhead, clips } = get();
     const clip = clips.find((c) => c.id === id);
     if (!clip) return;
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
     if (playhead <= clip.start || playhead >= clip.start + clip.duration) {
       set({ status: "Move playhead onto the clip to split" });
       return;
@@ -426,6 +641,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   duplicateClip: (id) => {
     const clip = get().clips.find((c) => c.id === id);
     if (!clip) return;
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
     const copy: TimelineClip = {
       ...clip,
       id: uid(isTextClip(clip) ? "text" : "clip"),
@@ -451,6 +670,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const clip = get().clips.find((c) => c.id === id);
     if (!clip || isTextClip(clip)) {
       set({ status: "Reverse works on video/audio clips" });
+      return;
+    }
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked" });
       return;
     }
     const next = !clip.effects.reverse;
@@ -535,9 +758,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   trimClip: (id, edge, timelineDelta) => {
     const clip = get().clips.find((c) => c.id === id);
     if (!clip) return;
+    const track = get().tracks.find((t) => t.index === clip.trackIndex);
+    if (track?.locked) return;
     const media = get().media.find((m) => m.id === clip.mediaId);
-    // Text + freeze/stills can be stretched freely (CapCut-style image hold)
-    const freeLen = isTextClip(clip) || isStillClip(clip);
+    // Text / FX / freeze can be stretched freely
+    const freeLen = isTextClip(clip) || isStillClip(clip) || isFxClip(clip);
     const mediaDur = freeLen
       ? Math.max(clip.outPoint + 120, 600)
       : (media?.duration ?? Math.max(clip.outPoint, clip.inPoint + 0.05));
@@ -572,10 +797,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       clips: s.clips.map((c) => {
         if (c.id !== id) return c;
+        const currentTrack = s.tracks.find((t) => t.index === c.trackIndex);
+        if (currentTrack?.locked) return c;
+
         const track =
           newTrack !== undefined
             ? s.tracks.find((t) => t.index === newTrack)
             : undefined;
+        if (track?.locked) return c;
 
         // Only allow dropping onto a track of the same kind
         if (track && track.kind !== c.trackKind) {
@@ -643,7 +872,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       projectPath: null,
       dirty: true,
       media: [],
-      tracks: defaultTracks,
+      tracks: defaultTracks.map((t) => ({ ...t })),
       clips: [],
       selectedClipId: null,
       playhead: 0,
@@ -657,6 +886,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       status: `New project: ${name?.trim() || "Untitled Project"}`,
       processingCount: 0,
       view: "editor",
+      libraryTool: "media",
     });
   },
 
@@ -671,7 +901,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         statusMessage: m.statusMessage || "Ready",
         previewPath: m.previewPath || m.path,
       })),
-      tracks: defaultTracks,
+      tracks: normalizeTracks(snap.tracks),
       clips: migrateClipTracks(snap.clips),
       selectedClipId: null,
       playhead: snap.playhead || 0,
@@ -685,6 +915,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       status: `Opened project: ${snap.name}`,
       processingCount: 0,
       view: "editor",
+      libraryTool: "media",
     }),
 
   toSnapshot: () => {
@@ -703,6 +934,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       zoom: s.zoom,
       media: s.media,
       clips: s.clips,
+      tracks: s.tracks,
     };
   },
 }));

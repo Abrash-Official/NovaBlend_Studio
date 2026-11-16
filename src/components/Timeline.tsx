@@ -1,13 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createFreezeClip } from "../lib/api";
-import { isStillClip, isTextClip, TimelineClip } from "../types/editor";
+import { isFxClip, isStillClip, isTextClip, TimelineClip } from "../types/editor";
 import { useEditorStore } from "../store/editorStore";
+
+function clampMenuPos(x: number, y: number, w: number, h: number) {
+  const pad = 10;
+  return {
+    x: Math.min(Math.max(pad, x), Math.max(pad, window.innerWidth - w - pad)),
+    y: Math.min(Math.max(pad, y), Math.max(pad, window.innerHeight - h - pad)),
+  };
+}
 import {
   IconCopy,
+  IconEye,
+  IconEyeOff,
   IconFreeze,
+  IconLock,
+  IconMute,
   IconReverse,
   IconSplit,
   IconTrash,
+  IconUnlock,
+  IconVolume,
 } from "./Icons";
 
 type DragMode = "move" | "trim-in" | "trim-out";
@@ -33,6 +48,7 @@ const LANE_GAP = 4;
 const LANE_PAD = 6;
 const LANE_H = CLIP_H + LANE_GAP;
 const TRACK_MIN_H = LANE_PAD * 2 + CLIP_H; // pad + one clip, no overflow
+const TRACK_HEADER_W = 100;
 
 /** Pack overlapping clips into visual lanes (overlap allowed, stacked for readability). */
 function assignLanes(trackClips: TimelineClip[]): { lanes: Map<string, number>; laneCount: number } {
@@ -95,6 +111,7 @@ export function Timeline() {
     insertFreezeMediaClip,
     fps,
     bumpProcessing,
+    updateTrack,
   } = useEditorStore();
 
   const duration = timelineDuration();
@@ -107,14 +124,13 @@ export function Timeline() {
 
   const widthPx = useMemo(() => Math.max(800, duration * zoom), [duration, zoom]);
 
-  /** Hide empty T1/A1 so audio sits right under V1; always keep V1 visible. */
+  /** Hide empty optional tracks; always keep V1 visible. */
   const trackLayouts = useMemo(() => {
-    // Pack used layers: V1, then A1, then T1 (skip empty text/audio)
-    const kindOrder = { video: 0, audio: 1, text: 2 } as const;
+    const kindOrder = { video: 0, fx: 1, audio: 2, text: 3 } as const;
     const visible = tracks
       .filter((track) => {
         const hasClips = clips.some((c) => c.trackIndex === track.index);
-        if (track.kind === "video") return true; // always show V1
+        if (track.kind === "video") return true;
         return hasClips;
       })
       .sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.index - b.index);
@@ -152,7 +168,7 @@ export function Timeline() {
     const el = scrollRef.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
-    const x = clientX - rect.left + el.scrollLeft - 88;
+    const x = clientX - rect.left + el.scrollLeft - TRACK_HEADER_W;
     return Math.max(0, Math.min(duration, x / zoom));
   }
 
@@ -168,7 +184,7 @@ export function Timeline() {
       const speed = Math.max(0.05, clip.effects.speed || 1);
       const media = state.media.find((m) => m.id === clip.mediaId);
       const mediaDur =
-        isTextClip(clip) || isStillClip(clip)
+        isTextClip(clip) || isStillClip(clip) || isFxClip(clip)
           ? Math.max(drag.originOut + 120, 600)
           : (media?.duration ?? Math.max(drag.originOut, 0.05));
       const minLen = 0.05;
@@ -229,6 +245,8 @@ export function Timeline() {
     };
   }, [drag, zoom, moveClip, updateClip]);
 
+  const menuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -243,6 +261,15 @@ export function Timeline() {
     };
   }, [menu]);
 
+  useLayoutEffect(() => {
+    if (!menu || !menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    const next = clampMenuPos(menu.x, menu.y, rect.width, rect.height);
+    if (next.x !== menu.x || next.y !== menu.y) {
+      setMenu({ ...menu, x: next.x, y: next.y });
+    }
+  }, [menu]);
+
   function beginDrag(
     e: React.MouseEvent,
     clipId: string,
@@ -252,10 +279,19 @@ export function Timeline() {
       inPoint: number;
       outPoint: number;
       duration: number;
+      trackIndex: number;
     },
   ) {
     e.preventDefault();
     e.stopPropagation();
+    const locked = useEditorStore
+      .getState()
+      .tracks.find((t) => t.index === clip.trackIndex)?.locked;
+    if (locked) {
+      setStatus("Track is locked");
+      selectClip(clipId);
+      return;
+    }
     setMenu(null);
     setPlaying(false);
     selectClip(clipId);
@@ -275,7 +311,9 @@ export function Timeline() {
     e.stopPropagation();
     setPlaying(false);
     selectClip(clipId);
-    setMenu({ x: e.clientX, y: e.clientY, clipId });
+    // Rough size first; refined after mount so Delete stays on-screen
+    const pos = clampMenuPos(e.clientX, e.clientY, 210, 240);
+    setMenu({ x: pos.x, y: pos.y, clipId });
   }
 
   async function onFreeze(clipId: string) {
@@ -345,13 +383,13 @@ export function Timeline() {
     : undefined;
 
   return (
-    <section className="panel mx-3 mb-2 flex min-h-0 flex-col overflow-hidden">
+    <section className="panel mx-2 mb-1 flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center gap-3 border-b border-[var(--line)] px-3 py-1.5">
         <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           Timeline
         </div>
         <div className="text-[10px] text-[var(--muted)]">
-          Empty tracks hide · drag clip up/down to change layer · right-click for tools
+          Ctrl+S save · Del delete · S split · Space play · Ctrl+D duplicate
         </div>
         <div className="flex-1" />
         <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
@@ -377,9 +415,9 @@ export function Timeline() {
           }
         }}
       >
-        <div style={{ width: widthPx + 88, minHeight: 24 + tracksBodyHeight }}>
+        <div style={{ width: widthPx + TRACK_HEADER_W, minHeight: 24 + tracksBodyHeight }}>
           <div className="sticky top-0 z-20 flex h-6 border-b border-[var(--line)] bg-[var(--bg-2)]">
-            <div className="w-[88px] shrink-0 border-r border-[var(--line)]" />
+            <div className="shrink-0 border-r border-[var(--line)]" style={{ width: TRACK_HEADER_W }} />
             <div className="relative flex-1" data-ruler="1" style={{ width: widthPx }}>
               {Array.from({ length: Math.ceil(duration) + 1 }).map((_, i) => (
                 <div
@@ -411,14 +449,58 @@ export function Timeline() {
                     : undefined,
               }}
             >
-              <div className="flex w-[88px] shrink-0 flex-col justify-center overflow-hidden border-r border-[var(--line)] bg-[var(--bg-2)] px-2 text-xs text-[var(--muted)]">
-                <div className="truncate">{track.name}</div>
-                {laneCount > 1 && (
-                  <div className="truncate text-[10px] text-[var(--warn)]">{laneCount} lanes</div>
-                )}
-                {trackClips.length === 0 && track.kind === "video" && (
-                  <div className="text-[10px] opacity-60">empty</div>
-                )}
+              <div className="track-header flex w-[100px] shrink-0 flex-col justify-center gap-1 overflow-hidden border-r border-[var(--line)] bg-[var(--bg-2)] px-1.5 text-xs text-[var(--muted)]">
+                <div className="flex items-center gap-1">
+                  <div className="min-w-0 flex-1 truncate font-medium text-[var(--text)]">
+                    {track.kind === "video"
+                      ? "V1"
+                      : track.kind === "fx"
+                        ? "F1"
+                        : track.kind === "audio"
+                          ? "A1"
+                          : "T1"}
+                  </div>
+                  {laneCount > 1 && (
+                    <span className="shrink-0 text-[9px] text-[var(--warn)]">{laneCount}</span>
+                  )}
+                </div>
+                <div className="track-controls">
+                  <button
+                    type="button"
+                    className={`track-ctrl ${track.locked ? "on" : ""}`}
+                    title={track.locked ? "Unlock track" : "Lock track"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateTrack(track.index, { locked: !track.locked });
+                    }}
+                  >
+                    {track.locked ? <IconLock size={12} /> : <IconUnlock size={12} />}
+                  </button>
+                  <button
+                    type="button"
+                    className={`track-ctrl ${track.hidden ? "on danger" : ""}`}
+                    title={track.hidden ? "Show track" : "Hide track"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateTrack(track.index, { hidden: !track.hidden });
+                    }}
+                  >
+                    {track.hidden ? <IconEyeOff size={12} /> : <IconEye size={12} />}
+                  </button>
+                  {(track.kind === "video" || track.kind === "audio") && (
+                    <button
+                      type="button"
+                      className={`track-ctrl ${track.muted ? "on danger" : ""}`}
+                      title={track.muted ? "Unmute track" : "Mute track"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateTrack(track.index, { muted: !track.muted });
+                      }}
+                    >
+                      {track.muted ? <IconMute size={12} /> : <IconVolume size={12} />}
+                    </button>
+                  )}
+                </div>
               </div>
               <div
                 className="relative overflow-hidden"
@@ -443,9 +525,11 @@ export function Timeline() {
                   const color =
                     clip.trackKind === "audio"
                       ? "var(--clip-a)"
-                      : isTextClip(clip)
-                        ? "var(--clip-t)"
-                        : "var(--clip-v)";
+                      : isFxClip(clip)
+                        ? "var(--clip-fx)"
+                        : isTextClip(clip)
+                          ? "var(--clip-t)"
+                          : "var(--clip-v)";
                   const handleW = 8;
                   const brightness = 1 + (lane % 3) * 0.08;
 
@@ -464,11 +548,21 @@ export function Timeline() {
                         boxShadow: selected
                           ? "inset 0 0 0 1px rgba(255,255,255,0.7)"
                           : "inset 0 0 0 1px rgba(255,255,255,0.12)",
-                        opacity: 0.96,
+                        opacity: track.hidden ? 0.35 : track.muted ? 0.7 : 0.96,
                         zIndex: selected || drag?.id === clip.id ? 8 : 1 + lane,
+                        cursor: track.locked ? "not-allowed" : undefined,
                       }}
-                      title={`${clip.name} · ${clip.duration.toFixed(1)}s · right-click for tools`}
-                      onContextMenu={(e) => openClipMenu(e, clip.id)}
+                      title={`${clip.name} · ${clip.duration.toFixed(1)}s${track.locked ? " · locked" : " · right-click for tools"}`}
+                      onClick={() => selectClip(clip.id)}
+                      onContextMenu={(e) => {
+                        if (track.locked) {
+                          e.preventDefault();
+                          setStatus("Track is locked");
+                          selectClip(clip.id);
+                          return;
+                        }
+                        openClipMenu(e, clip.id);
+                      }}
                     >
                       <div
                         className="clip-trim clip-trim-left"
@@ -512,83 +606,90 @@ export function Timeline() {
 
           <div
             className="pointer-events-none absolute top-6 z-30 w-px bg-[var(--accent)]"
-            style={{ left: 88 + playhead * zoom, height: tracksBodyHeight }}
+            style={{ left: TRACK_HEADER_W + playhead * zoom, height: tracksBodyHeight }}
           >
             <div className="absolute -left-1.5 top-0 h-3 w-3 rounded-sm bg-[var(--accent)]" />
           </div>
         </div>
       </div>
 
-      {menu && menuClip && (
-        <div
-          className="ctx-menu"
-          style={{ left: menu.x, top: menu.y }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            className="ctx-item"
-            onClick={() => {
-              splitClipAtPlayhead(menu.clipId);
-              setMenu(null);
-            }}
+      {menu &&
+        menuClip &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="ctx-menu"
+            style={{ left: menu.x, top: menu.y }}
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            <IconSplit size={14} />
-            Split at playhead
-          </button>
-          {!isTextClip(menuClip) && (
             <button
               type="button"
               className="ctx-item"
               onClick={() => {
-                toggleClipReverse(menu.clipId);
+                splitClipAtPlayhead(menu.clipId);
                 setMenu(null);
               }}
             >
-              <IconReverse size={14} />
-              {menuClip.effects.reverse ? "Undo reverse" : "Reverse"}
+              <IconSplit size={14} />
+              Split at playhead
+              <span className="ctx-kbd">S</span>
             </button>
-          )}
-          {menuClip.trackKind === "video" && !isTextClip(menuClip) && (
+            {!isTextClip(menuClip) && (
+              <button
+                type="button"
+                className="ctx-item"
+                onClick={() => {
+                  toggleClipReverse(menu.clipId);
+                  setMenu(null);
+                }}
+              >
+                <IconReverse size={14} />
+                {menuClip.effects.reverse ? "Undo reverse" : "Reverse"}
+              </button>
+            )}
+            {menuClip.trackKind === "video" && !isTextClip(menuClip) && (
+              <button
+                type="button"
+                className="ctx-item"
+                disabled={freezing}
+                onClick={() => {
+                  const id = menu.clipId;
+                  setMenu(null);
+                  void onFreeze(id);
+                }}
+              >
+                <IconFreeze size={14} />
+                {freezing ? "Freezing…" : "Freeze frame (2s)"}
+              </button>
+            )}
             <button
               type="button"
               className="ctx-item"
-              disabled={freezing}
               onClick={() => {
-                const id = menu.clipId;
+                duplicateClip(menu.clipId);
                 setMenu(null);
-                void onFreeze(id);
               }}
             >
-              <IconFreeze size={14} />
-              {freezing ? "Freezing…" : "Freeze frame (2s)"}
+              <IconCopy size={14} />
+              Duplicate
+              <span className="ctx-kbd">Ctrl+D</span>
             </button>
-          )}
-          <button
-            type="button"
-            className="ctx-item"
-            onClick={() => {
-              duplicateClip(menu.clipId);
-              setMenu(null);
-            }}
-          >
-            <IconCopy size={14} />
-            Duplicate
-          </button>
-          <div className="ctx-sep" />
-          <button
-            type="button"
-            className="ctx-item danger"
-            onClick={() => {
-              removeClip(menu.clipId);
-              setMenu(null);
-            }}
-          >
-            <IconTrash size={14} />
-            Delete
-          </button>
-        </div>
-      )}
+            <div className="ctx-sep" />
+            <button
+              type="button"
+              className="ctx-item danger"
+              onClick={() => {
+                removeClip(menu.clipId);
+                setMenu(null);
+              }}
+            >
+              <IconTrash size={14} />
+              Delete
+              <span className="ctx-kbd">Del</span>
+            </button>
+          </div>,
+          document.body,
+        )}
     </section>
   );
 }

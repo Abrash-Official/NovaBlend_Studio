@@ -31,6 +31,10 @@ pub struct ClipEffects {
     pub mask_feather: f64,
     pub motion_blur: f64,
     pub effect: String,
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
     pub pip_x: f64,
     pub pip_y: f64,
     pub scale_keyframes: Vec<Keyframe>,
@@ -58,6 +62,8 @@ impl Default for ClipEffects {
             mask_feather: 0.0,
             motion_blur: 0.0,
             effect: "none".into(),
+            fade_in: 0.0,
+            fade_out: 0.0,
             pip_x: 0.05,
             pip_y: 0.05,
             scale_keyframes: vec![],
@@ -434,10 +440,51 @@ fn effect_filters(fx: &ClipEffects, clip_duration: f64) -> Vec<String> {
 
     match fx.effect.as_str() {
         "grayscale" => filters.push("hue=s=0".into()),
-        "sepia" => filters.push("colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131".into()),
+        "sepia" => filters.push(
+            "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131".into(),
+        ),
         "vignette" => filters.push("vignette=PI/4".into()),
         "sharpen" => filters.push("unsharp=5:5:1.0:5:5:0.0".into()),
+        "teal_orange" => {
+            filters.push("eq=contrast=1.15:saturation=1.35:brightness=0.03".into());
+            filters.push("colorbalance=rs=0.12:gs=-0.04:bs=-0.1:rm=0.08:bm=-0.06".into());
+        }
+        "cyberpunk" => {
+            filters.push("eq=contrast=1.25:saturation=1.55:brightness=0.04".into());
+            filters.push("hue=h=200:s=1.2".into());
+        }
+        "noir" => {
+            filters.push("hue=s=0".into());
+            filters.push("eq=contrast=1.4:brightness=-0.02".into());
+        }
+        "warm_glow" => {
+            filters.push("eq=brightness=0.06:saturation=1.2".into());
+            filters.push(
+                "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131".into(),
+            );
+        }
+        "cold_blue" => {
+            filters.push("eq=contrast=1.1:saturation=1.15".into());
+            filters.push("hue=h=190:s=1.1".into());
+        }
+        "vhs" => {
+            filters.push("eq=contrast=1.2:saturation=0.85:brightness=0.02".into());
+            filters.push("noise=alls=8:allf=t".into());
+        }
+        "bloom" => {
+            filters.push("eq=brightness=0.08:contrast=0.95:saturation=1.1".into());
+            filters.push("gblur=sigma=0.6".into());
+        }
+        "high_sat" => filters.push("eq=contrast=1.15:saturation=1.8:brightness=0.03".into()),
         _ => {}
+    }
+
+    if fx.fade_in > 0.02 {
+        filters.push(format!("fade=t=in:st=0:d={}", fx.fade_in));
+    }
+    if fx.fade_out > 0.02 && clip_duration > fx.fade_out {
+        let st = (clip_duration - fx.fade_out).max(0.0);
+        filters.push(format!("fade=t=out:st={st}:d={}", fx.fade_out));
     }
 
     if fx.motion_blur > 0.01 {

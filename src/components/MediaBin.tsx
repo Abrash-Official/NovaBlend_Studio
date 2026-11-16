@@ -10,17 +10,17 @@ function formatEta(seconds: number) {
   return `${m}m ${s}s left`;
 }
 
-export function MediaBin() {
+export function MediaBin({ embedded = false }: { embedded?: boolean }) {
   const media = useEditorStore((s) => s.media);
   const addClipFromMedia = useEditorStore((s) => s.addClipFromMedia);
   const removeMedia = useEditorStore((s) => s.removeMedia);
   const processingCount = useEditorStore((s) => s.processingCount);
 
-  return (
-    <aside className="panel flex h-full flex-col overflow-hidden">
+  const body = (
+    <>
       <div className="flex items-center justify-between border-b border-[var(--line)] px-2 py-1.5">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-          Media Bin
+          Project Media
         </div>
         {processingCount > 0 && (
           <div className="text-[10px] text-[var(--warn)]">Processing {processingCount}</div>
@@ -128,6 +128,14 @@ export function MediaBin() {
           );
         })}
       </div>
-    </aside>
+    </>
+  );
+
+  if (embedded) {
+    return <div className="flex h-full min-h-0 flex-col overflow-hidden">{body}</div>;
+  }
+
+  return (
+    <aside className="panel flex h-full flex-col overflow-hidden">{body}</aside>
   );
 }

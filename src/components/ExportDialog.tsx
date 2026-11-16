@@ -36,6 +36,7 @@ export function ExportDialog() {
     showExportDialog,
     setShowExportDialog,
     clips,
+    tracks,
     aspect,
     fps,
     setFps,
@@ -113,8 +114,39 @@ export function ExportDialog() {
     setStatus(`Exporting ${previewSize.width}×${previewSize.height} @ ${localFps}fps…`);
 
     try {
+      const hidden = new Set(
+        tracks.filter((t) => t.hidden).map((t) => t.index),
+      );
+      const fxClips = clips.filter(
+        (c) => c.trackKind === "fx" && !hidden.has(c.trackIndex),
+      );
+
+      const exportClips = clips
+        .filter((c) => {
+          if (c.trackKind === "fx") return false;
+          return !hidden.has(c.trackIndex);
+        })
+        .map((c) => {
+          const track = tracks.find((t) => t.index === c.trackIndex);
+          let next = track?.muted ? { ...c, hasAudio: false } : c;
+          if (next.trackKind === "video") {
+            const mid = next.start + next.duration * 0.5;
+            const fx = fxClips
+              .filter((f) => mid >= f.start && mid < f.start + f.duration)
+              .sort((a, b) => a.trackIndex - b.trackIndex)
+              .at(-1);
+            if (fx?.effects?.effect && fx.effects.effect !== "none") {
+              next = {
+                ...next,
+                effects: { ...next.effects, effect: fx.effects.effect },
+              };
+            }
+          }
+          return next;
+        });
+
       const result = await exportTimeline({
-        clips,
+        clips: exportClips,
         outputPath,
         width: previewSize.width,
         height: previewSize.height,
