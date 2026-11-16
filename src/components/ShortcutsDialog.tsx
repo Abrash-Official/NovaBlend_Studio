@@ -9,10 +9,15 @@ export function ShortcutsDialog({
 
   const rows: { keys: string; action: string }[] = [
     { keys: "Ctrl + S", action: "Save project" },
+    { keys: "Ctrl + Z", action: "Undo" },
+    { keys: "Ctrl + Y / Ctrl + Shift + Z", action: "Redo" },
+    { keys: "Ctrl + C", action: "Copy selected clip" },
+    { keys: "Ctrl + V", action: "Paste clip at playhead" },
+    { keys: "Ctrl + D", action: "Duplicate selected clip" },
     { keys: "Space", action: "Play / pause" },
     { keys: "Delete / Backspace", action: "Delete selected clip" },
     { keys: "S", action: "Split clip at playhead" },
-    { keys: "Ctrl + D", action: "Duplicate selected clip" },
+    { keys: "P", action: "Toggle magnet snap" },
     { keys: "← / →", action: "Nudge playhead (Shift = 1s)" },
     { keys: "J / K / L", action: "Scrub back / pause / scrub forward" },
     { keys: "[ / ]", action: "Trim in / out by 0.1s" },

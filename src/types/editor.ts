@@ -61,6 +61,10 @@ export interface ClipEffects {
   audioFadeIn: number;
   audioFadeOut: number;
   audioEnhance: boolean;
+  /** Open-source style voice FX id (none|chipmunk|deep|robot|cave|radio) */
+  voiceEffect: string;
+  /** Simple edge chroma remove-bg for preview/export */
+  removeBg: boolean;
   blendMode: "normal" | "screen" | "multiply" | "overlay" | "lighten" | "color-dodge";
   scale: number;
   rotation: number;
@@ -87,6 +91,47 @@ export interface ClipEffects {
   pipY: number;
   scaleKeyframes: Keyframe[];
   opacityKeyframes: Keyframe[];
+  posXKeyframes: Keyframe[];
+  posYKeyframes: Keyframe[];
+  rotationKeyframes: Keyframe[];
+}
+
+export type KeyframeProp =
+  | "scale"
+  | "opacity"
+  | "posX"
+  | "posY"
+  | "rotation";
+
+export function keyframeListKey(
+  prop: KeyframeProp,
+): keyof Pick<
+  ClipEffects,
+  | "scaleKeyframes"
+  | "opacityKeyframes"
+  | "posXKeyframes"
+  | "posYKeyframes"
+  | "rotationKeyframes"
+> {
+  switch (prop) {
+    case "scale":
+      return "scaleKeyframes";
+    case "opacity":
+      return "opacityKeyframes";
+    case "posX":
+      return "posXKeyframes";
+    case "posY":
+      return "posYKeyframes";
+    case "rotation":
+      return "rotationKeyframes";
+  }
+}
+
+export function keyframesFor(
+  fx: ClipEffects,
+  prop: KeyframeProp,
+): Keyframe[] {
+  return fx[keyframeListKey(prop)] || [];
 }
 
 export interface MediaItem {
@@ -362,6 +407,18 @@ export type LibraryTool =
   | "captions"
   | "filters";
 
+export type TimelineTab = {
+  id: string;
+  name: string;
+};
+
+export type TimelineBundle = {
+  clips: TimelineClip[];
+  tracks: Track[];
+  playhead: number;
+  zoom: number;
+};
+
 export interface ProjectSnapshot {
   version: 1;
   name: string;
@@ -379,6 +436,10 @@ export interface ProjectSnapshot {
   media: MediaItem[];
   clips: TimelineClip[];
   tracks?: Track[];
+  /** Extra timelines in this project (active is clips/tracks above) */
+  timelineTabs?: TimelineTab[];
+  activeTimelineId?: string;
+  timelineBundles?: Record<string, TimelineBundle>;
 }
 
 export const DEFAULT_EFFECTS = (): ClipEffects => ({
@@ -396,6 +457,8 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   audioFadeIn: 0,
   audioFadeOut: 0,
   audioEnhance: false,
+  voiceEffect: "none",
+  removeBg: false,
   blendMode: "normal",
   scale: 1,
   rotation: 0,
@@ -419,6 +482,9 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   pipY: 0.05,
   scaleKeyframes: [],
   opacityKeyframes: [],
+  posXKeyframes: [],
+  posYKeyframes: [],
+  rotationKeyframes: [],
 });
 
 export const BLEND_MODES: ClipEffects["blendMode"][] = [
@@ -429,6 +495,26 @@ export const BLEND_MODES: ClipEffects["blendMode"][] = [
   "lighten",
   "color-dodge",
 ];
+
+/** Preview/export voice FX — FFmpeg filters + approximate preview rates. */
+export const VOICE_EFFECTS = [
+  { id: "none", label: "Original", desc: "No voice change" },
+  { id: "chipmunk", label: "Chipmunk", desc: "Higher pitch" },
+  { id: "deep", label: "Deep", desc: "Lower pitch" },
+  { id: "robot", label: "Robot", desc: "Tremolo / metallic" },
+  { id: "cave", label: "Cave", desc: "Echo chamber" },
+  { id: "radio", label: "Radio", desc: "Band-limited" },
+] as const;
+
+export type VoiceEffectId = (typeof VOICE_EFFECTS)[number]["id"];
+
+/** Approximate HTMLMediaElement playbackRate for voice preview. */
+export function voicePreviewRate(voice: string, speed: number): number {
+  const s = Math.max(0.25, Math.min(4, speed || 1));
+  if (voice === "chipmunk") return Math.min(4, s * 1.28);
+  if (voice === "deep") return Math.max(0.25, s * 0.78);
+  return s;
+}
 
 export const DEFAULT_TEXT = (): TextStyle => ({
   content: "Your text here",

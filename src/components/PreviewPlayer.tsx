@@ -11,6 +11,7 @@ import {
   TextStyle,
   TimelineClip,
 } from "../types/editor";
+import { syncMediaAudio } from "../lib/audioEngine";
 
 function fadeMultiplier(
   localT: number,
@@ -140,6 +141,7 @@ export function PreviewPlayer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
   const [textDrag, setTextDrag] = useState<TextDrag | null>(null);
@@ -154,9 +156,12 @@ export function PreviewPlayer() {
     selectedClipId,
     selectClip,
     updateClip,
+    aspect,
+    setAspect,
   } = useEditorStore();
 
   const tracks = useEditorStore((s) => s.tracks);
+  const aspectOrder = ["16:9", "9:16", "1:1", "4:5", "21:9"] as const;
 
   const activeVideoClips = useMemo(
     () =>
@@ -324,7 +329,8 @@ export function PreviewPlayer() {
             active.find((c) => {
               const track = state.tracks.find((t) => t.index === c.trackIndex);
               if (track?.muted) return false;
-              return c.hasAudio || c.trackIndex === 0;
+              if (!c.hasAudio) return false;
+              return (c.effects.volume ?? 1) > 0.01;
             })?.id ?? null;
 
           for (const [id, video] of videoRefs.current) {
@@ -334,24 +340,95 @@ export function PreviewPlayer() {
             }
           }
 
+          // Dedicated A1 (and other) audio clips — Web Audio for gain > 1 + voice FX
+          const activeAudio = state.clips.filter((c) => {
+            if (c.trackKind !== "audio") return false;
+            if (ph < c.start || ph >= c.start + c.duration) return false;
+            const track = state.tracks.find((t) => t.index === c.trackIndex);
+            return !track?.hidden && !track?.muted && c.hasAudio;
+          });
+          const ensureAudio = (clipId: string) => {
+            let el = audioRefs.current.get(clipId);
+            if (!el) {
+              el = new Audio();
+              el.preload = "auto";
+              el.crossOrigin = "anonymous";
+              audioRefs.current.set(clipId, el);
+            }
+            return el;
+          };
+          for (const [id, el] of audioRefs.current) {
+            if (!activeAudio.some((c) => c.id === id)) {
+              if (!el.paused) el.pause();
+              el.muted = true;
+            }
+          }
+          for (const aClip of activeAudio) {
+            const src = aClip.previewPath || aClip.mediaPath;
+            if (!src) continue;
+            const el = ensureAudio(aClip.id);
+            const localT = ph - aClip.start;
+            let gain = Math.max(0, aClip.effects.volume ?? 1);
+            const afi = aClip.effects.audioFadeIn || 0;
+            const afo = aClip.effects.audioFadeOut || 0;
+            if (afi > 0 && localT < afi) gain *= localT / afi;
+            if (afo > 0 && localT > aClip.duration - afo) {
+              gain *= Math.max(0, (aClip.duration - localT) / afo);
+            }
+            const mediaT = Math.min(
+              aClip.outPoint - 0.02,
+              Math.max(
+                aClip.inPoint,
+                localT * (aClip.effects.speed || 1) + aClip.inPoint,
+              ),
+            );
+            void syncMediaAudio({
+              id: `a_${aClip.id}`,
+              el,
+              srcPath: src,
+              playing: state.isPlaying,
+              mediaTime: mediaT,
+              volumeLinear: gain,
+              voiceEffect: aClip.effects.voiceEffect || "none",
+              speed: aClip.effects.speed || 1,
+              muted: gain < 0.001,
+            });
+          }
+
           for (const clip of active) {
             const track = state.tracks.find((t) => t.index === clip.trackIndex);
             const src = clip.previewPath || clip.mediaPath;
             const video = ensureVideo(clip.id, src);
+            video.crossOrigin = "anonymous";
             const clipLocalT = ph - clip.start;
-            let audioGain = Math.max(0, Math.min(2, clip.effects.volume ?? 1));
-            if (clip.effects.audioEnhance) audioGain *= 1.08;
+            let audioGain = Math.max(0, clip.effects.volume ?? 1);
+            if (!clip.hasAudio) audioGain = 0;
             const afi = clip.effects.audioFadeIn || 0;
             const afo = clip.effects.audioFadeOut || 0;
             if (afi > 0 && clipLocalT < afi) audioGain *= clipLocalT / afi;
             if (afo > 0 && clipLocalT > clip.duration - afo) {
               audioGain *= Math.max(0, (clip.duration - clipLocalT) / afo);
             }
-            video.muted = track?.muted || clip.id !== audibleId;
-            try {
-              video.volume = Math.min(1, audioGain);
-            } catch {
-              /* ignore */
+            const videoAudible =
+              !!clip.hasAudio &&
+              !track?.muted &&
+              clip.id === audibleId &&
+              audioGain >= 0.01;
+            if (videoAudible && src) {
+              void syncMediaAudio({
+                id: `v_${clip.id}`,
+                el: video,
+                srcPath: src,
+                playing: state.isPlaying && !isStillClip(clip),
+                mediaTime: 0,
+                volumeLinear: audioGain,
+                voiceEffect: "none",
+                speed: 1,
+                muted: false,
+                controlTransport: false,
+              });
+            } else {
+              video.muted = true;
             }
 
             // Freeze / still: always hold the first frame (stretchable on timeline)
@@ -409,7 +486,14 @@ export function PreviewPlayer() {
 
             const fx = clip.effects;
             const localT = ph - clip.start;
-            const scale = lerp(fx.scaleKeyframes, localT, fx.scale);
+            const scale = lerp(fx.scaleKeyframes || [], localT, fx.scale);
+            const rot = lerp(
+              fx.rotationKeyframes || [],
+              localT,
+              fx.rotation,
+            );
+            const posX = lerp(fx.posXKeyframes || [], localT, fx.posX ?? 0);
+            const posY = lerp(fx.posYKeyframes || [], localT, fx.posY ?? 0);
 
             const hiddenFx = new Set(
               state.tracks.filter((t) => t.hidden && t.kind === "fx").map((t) => t.index),
@@ -468,7 +552,7 @@ export function PreviewPlayer() {
               ctx.globalAlpha = opacity;
               ctx.globalCompositeOperation = blend as GlobalCompositeOperation;
               ctx.translate(x + targetW / 2, y + targetH / 2);
-              ctx.rotate((fx.rotation * Math.PI) / 180);
+              ctx.rotate((rot * Math.PI) / 180);
               ctx.scale(fx.mirrorH ? -scale : scale, fx.mirrorV ? -scale : scale);
               if (maskFx) {
                 const mx = -targetW / 2 + (maskFx.cropX || 0) * targetW;
@@ -497,12 +581,54 @@ export function PreviewPlayer() {
                 ctx.clip();
               }
               ctx.filter = cssFilterForEffect(lookId, lookFx);
-              ctx.drawImage(video, -targetW / 2, -targetH / 2, targetW, targetH);
+              if (fx.removeBg || lookFx.removeBg) {
+                const tw = Math.max(2, Math.round(targetW));
+                const th = Math.max(2, Math.round(targetH));
+                const off = document.createElement("canvas");
+                off.width = tw;
+                off.height = th;
+                const octx = off.getContext("2d");
+                if (octx) {
+                  octx.drawImage(video, 0, 0, tw, th);
+                  const img = octx.getImageData(0, 0, tw, th);
+                  const d = img.data;
+                  // Sample corners for key color (typical studio / green screen)
+                  const samples = [
+                    0,
+                    (tw - 1) * 4,
+                    (th - 1) * tw * 4,
+                    ((th - 1) * tw + (tw - 1)) * 4,
+                  ];
+                  let sr = 0;
+                  let sg = 0;
+                  let sb = 0;
+                  for (const i of samples) {
+                    sr += d[i];
+                    sg += d[i + 1];
+                    sb += d[i + 2];
+                  }
+                  sr /= 4;
+                  sg /= 4;
+                  sb /= 4;
+                  const thresh = 48;
+                  for (let i = 0; i < d.length; i += 4) {
+                    const dr = Math.abs(d[i] - sr);
+                    const dg = Math.abs(d[i + 1] - sg);
+                    const db = Math.abs(d[i + 2] - sb);
+                    if (dr + dg + db < thresh * 3) {
+                      d[i + 3] = 0;
+                    }
+                  }
+                  octx.putImageData(img, 0, 0);
+                  ctx.drawImage(off, -targetW / 2, -targetH / 2, targetW, targetH);
+                } else {
+                  ctx.drawImage(video, -targetW / 2, -targetH / 2, targetW, targetH);
+                }
+              } else {
+                ctx.drawImage(video, -targetW / 2, -targetH / 2, targetW, targetH);
+              }
               ctx.restore();
             };
-
-            const posX = fx.posX ?? 0;
-            const posY = fx.posY ?? 0;
 
             if (clip.trackIndex === 0) {
               if (state.backgroundBlur) {
@@ -609,24 +735,60 @@ export function PreviewPlayer() {
     });
   }
 
+  function toggleFullscreen() {
+    const el = frameRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+      return;
+    }
+    void el.requestFullscreen().catch(() => {
+      useEditorStore.getState().setStatus("Fullscreen not available");
+    });
+  }
+
   return (
     <section className="panel flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center justify-between border-b border-[var(--line)] px-3 py-2">
         <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           Preview
         </div>
-        <div className="font-[var(--font-mono)] text-[11px] text-[var(--muted)]">
-          {projectWidth}×{projectHeight} · {formatTime(playhead)}
-          {activeVideoClips.length === 0 && activeTextClips.length === 0
-            ? " · no clip"
-            : ""}
+        <div className="flex items-center gap-2">
+          <div className="font-[var(--font-mono)] text-[11px] text-[var(--muted)]">
+            {projectWidth}×{projectHeight} · {formatTime(playhead)}
+            {activeVideoClips.length === 0 && activeTextClips.length === 0
+              ? " · no clip"
+              : ""}
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost h-7 px-2 text-[10px]"
+            title="Cycle aspect ratio"
+            onClick={() => {
+              const i = aspectOrder.indexOf(
+                aspect as (typeof aspectOrder)[number],
+              );
+              const next = aspectOrder[(i + 1) % aspectOrder.length];
+              setAspect(next);
+            }}
+          >
+            Ratio {aspect}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost h-7 px-2 text-[10px]"
+            title="Fullscreen"
+            onClick={() => toggleFullscreen()}
+          >
+            Full
+          </button>
         </div>
       </div>
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[#05070b] p-3">
         <div
           ref={frameRef}
-          className="relative flex h-full max-h-full w-full max-w-full items-center justify-center overflow-hidden border border-[var(--line)]"
+          className="preview-stage relative flex h-full max-h-full w-full max-w-full items-center justify-center overflow-hidden border border-[var(--line)] bg-black"
           style={{
             aspectRatio: `${projectWidth / projectHeight}`,
             borderRadius: "var(--radius)",

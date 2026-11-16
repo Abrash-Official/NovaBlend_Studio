@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { ExportDialog } from "./components/ExportDialog";
 import { HomeScreen } from "./components/HomeScreen";
@@ -8,6 +9,7 @@ import { Timeline } from "./components/Timeline";
 import { Toolbar } from "./components/Toolbar";
 import { useAutoSave } from "./hooks/useAutoSave";
 import { useEditorHotkeys } from "./hooks/useEditorHotkeys";
+import { importMediaFiles, pathsFromDrop } from "./lib/importMediaFiles";
 import { useEditorStore } from "./store/editorStore";
 
 type ResizeAxis = "left" | "right" | "timeline" | null;
@@ -77,6 +79,42 @@ export default function App() {
 
   useEditorHotkeys(view === "editor");
   useAutoSave(view === "editor");
+
+  // Native + HTML5 drag-and-drop import
+  useEffect(() => {
+    if (view !== "editor") return;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "drop") {
+          void importMediaFiles(event.payload.paths);
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {
+        /* HTML5 fallback only */
+      });
+
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      void pathsFromDrop(e).then((paths) => {
+        if (paths.length) void importMediaFiles(paths);
+      });
+    };
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      unlisten?.();
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [view]);
 
   if (view === "home") {
     return <HomeScreen />;

@@ -30,7 +30,50 @@ export function useEditorHotkeys(enabled: boolean) {
         return;
       }
 
+      // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y — undo / redo
+      if (mod && (key === "z" || key === "Z") && !e.shiftKey) {
+        if (isTypingTarget(e.target)) return;
+        e.preventDefault();
+        s.undo();
+        return;
+      }
+      if (mod && (key === "z" || key === "Z") && e.shiftKey) {
+        if (isTypingTarget(e.target)) return;
+        e.preventDefault();
+        s.redo();
+        return;
+      }
+      if (mod && (key === "y" || key === "Y")) {
+        if (isTypingTarget(e.target)) return;
+        e.preventDefault();
+        s.redo();
+        return;
+      }
+
+      // Ctrl+C / Ctrl+V — copy / paste clip
+      if (mod && (key === "c" || key === "C")) {
+        if (isTypingTarget(e.target)) return;
+        e.preventDefault();
+        s.copySelectedClip();
+        return;
+      }
+      if (mod && (key === "v" || key === "V")) {
+        if (isTypingTarget(e.target)) return;
+        e.preventDefault();
+        s.pasteClipboard();
+        return;
+      }
+
       if (isTypingTarget(e.target)) return;
+
+      // P — toggle magnet
+      if (!mod && (key === "p" || key === "P")) {
+        e.preventDefault();
+        const next = !s.magnetEnabled;
+        s.setMagnetEnabled(next);
+        s.setStatus(next ? "Magnet on" : "Magnet off");
+        return;
+      }
 
       // Space — play / pause
       if (key === " " || e.code === "Space") {

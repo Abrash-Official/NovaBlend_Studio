@@ -11,6 +11,7 @@ import {
   TextAlign,
   TextStyle,
 } from "../types/editor";
+import { AudioInspector } from "./AudioInspector";
 import { ClipInspector } from "./ClipInspector";
 import { IconText, IconTrash } from "./Icons";
 import { NumberSlider as SliderRow } from "./ui/NumberSlider";
@@ -489,6 +490,15 @@ export function PropertiesPanel() {
         trimSelected={trimSelected}
         addTextClip={addTextClip}
         removeSelectedClip={removeSelectedClip}
+      />
+    );
+  }
+
+  if (clip.trackKind === "audio") {
+    return (
+      <AudioInspector
+        clip={clip}
+        locked={!!tracks.find((t) => t.index === clip.trackIndex)?.locked}
       />
     );
   }

@@ -1,28 +1,14 @@
-import { ask, open } from "@tauri-apps/plugin-dialog";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
-import { ASPECT_PRESETS, AspectRatioId } from "../types/editor";
-import {
-  createPreviewProxy,
-  PreviewProgressEvent,
-  previewThumbPath,
-  probeMedia,
-} from "../lib/api";
+import { PreviewProgressEvent } from "../lib/api";
+import { importMediaFiles } from "../lib/importMediaFiles";
 import { saveCurrentProject } from "../lib/saveProject";
 import { OpenProjectDialog } from "./OpenProjectDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
-import {
-  IconAdd,
-  IconImport,
-  IconSplit,
-  IconText,
-  IconTrash,
-} from "./Icons";
-
-function uid() {
-  return `media_${Math.random().toString(36).slice(2, 10)}`;
-}
+import { IconImport } from "./Icons";
 
 function formatEta(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "…";
@@ -34,24 +20,15 @@ function formatEta(seconds: number) {
 
 export function Toolbar() {
   const {
-    addMedia,
     updateMedia,
-    addClipFromMedia,
-    addTextClip,
-    splitSelectedAtPlayhead,
-    removeSelectedClip,
-    aspect,
-    setAspect,
     backgroundBlur,
     setBackgroundBlur,
     clips,
     exporting,
     setShowExportDialog,
     setStatus,
-    selectedClipId,
     projectName,
     dirty,
-    bumpProcessing,
     setView,
     setPlaying,
     lastAutoSavedAt,
@@ -123,6 +100,7 @@ export function Toolbar() {
   }
 
   async function importMedia() {
+    const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({
       multiple: true,
       filters: [
@@ -134,70 +112,7 @@ export function Toolbar() {
     });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
-
-    for (const path of paths) {
-      const name = path.split(/[/\\]/).pop() || "media";
-      const id = uid();
-      try {
-        const probe = await probeMedia(path);
-        addMedia({
-          id,
-          name,
-          path: probe.path,
-          previewPath: probe.path,
-          duration: probe.duration || 5,
-          width: probe.width,
-          height: probe.height,
-          hasVideo: probe.hasVideo,
-          hasAudio: probe.hasAudio,
-          codec: probe.codec,
-          fps: probe.fps || 30,
-          readyState: probe.hasVideo ? "processing" : "ready",
-          statusMessage: probe.hasVideo ? "Starting…" : "Ready",
-          progressPercent: probe.hasVideo ? 0 : 100,
-          progressEtaSeconds: probe.hasVideo ? probe.duration : 0,
-        });
-
-        if (!probe.hasVideo) {
-          setStatus(`Ready: ${name}`);
-          continue;
-        }
-
-        bumpProcessing(1);
-        setStatus(`Processing “${name}”…`);
-
-        try {
-          const previewPath = await createPreviewProxy(probe.path);
-          let thumbPath: string | undefined;
-          try {
-            thumbPath = (await previewThumbPath(previewPath)) || undefined;
-          } catch {
-            /* optional */
-          }
-          updateMedia(id, {
-            previewPath,
-            thumbPath,
-            readyState: "ready",
-            statusMessage:
-              previewPath === probe.path ? "Ready" : "Ready · H.264 preview",
-            progressPercent: 100,
-            progressEtaSeconds: 0,
-          });
-          setStatus(`Ready: ${name}`);
-        } catch (e) {
-          updateMedia(id, {
-            readyState: "error",
-            statusMessage: `Failed: ${e}`,
-            progressPercent: 0,
-          });
-          setStatus(`Preview failed for ${name}: ${e}`);
-        } finally {
-          bumpProcessing(-1);
-        }
-      } catch (e) {
-        setStatus(`Import failed: ${e}`);
-      }
-    }
+    await importMediaFiles(paths);
   }
 
   const processingMedia = useEditorStore((s) =>
@@ -213,8 +128,26 @@ export function Toolbar() {
           ? "Auto saved"
           : "Ready";
 
+  async function winAction(kind: "min" | "max" | "close") {
+    try {
+      const win = getCurrentWindow();
+      if (kind === "min") await win.minimize();
+      else if (kind === "max") await win.toggleMaximize();
+      else await win.close();
+    } catch (e) {
+      setStatus(`Window control failed: ${e}`);
+    }
+  }
+
   return (
-    <header className="flex items-center gap-1.5 border-b border-[var(--line)] bg-[var(--bg-1)] px-2">
+    <header className="titlebar flex items-center gap-1.5 border-b border-[var(--line)] bg-[var(--bg-1)] px-2">
+      <div className="titlebar-brand" data-tauri-drag-region>
+        <img src="/icon.svg" alt="" className="titlebar-logo-img" draggable={false} />
+        <span className="titlebar-name" data-tauri-drag-region>
+          NovaBlend
+        </span>
+      </div>
+
       <div className="relative mr-1" ref={menuRef}>
         <button
           type="button"
@@ -315,66 +248,15 @@ export function Toolbar() {
 
       <div className="mx-1 h-4 w-px bg-[var(--line)]" />
 
-      <button className="btn btn-icon" onClick={importMedia} disabled={exporting} title="Import media">
+      <button
+        className="btn btn-icon"
+        onClick={() => void importMedia()}
+        disabled={exporting}
+        title="Import media"
+      >
         <IconImport size={14} />
         Import
       </button>
-      <button
-        className="btn btn-icon"
-        title="Add ready media to timeline"
-        onClick={() => {
-          const media = useEditorStore.getState().media.find((m) => m.readyState === "ready");
-          if (media) addClipFromMedia(media.id);
-          else setStatus("No ready media — wait for processing");
-        }}
-      >
-        <IconAdd size={14} />
-        Add
-      </button>
-      <button
-        className="btn btn-icon btn-text-tool"
-        title="Add text overlay"
-        onClick={() => {
-          useEditorStore.getState().setLibraryTool("text");
-          addTextClip();
-        }}
-      >
-        <IconText size={14} />
-        Text
-      </button>
-      <button
-        className="btn btn-icon"
-        onClick={splitSelectedAtPlayhead}
-        disabled={!selectedClipId}
-        title="Split selected at playhead"
-      >
-        <IconSplit size={14} />
-      </button>
-      <button
-        className="btn btn-icon btn-danger"
-        onClick={removeSelectedClip}
-        disabled={!selectedClipId}
-        title="Delete selected clip"
-      >
-        <IconTrash size={14} />
-      </button>
-
-      <div className="mx-1 h-4 w-px bg-[var(--line)]" />
-
-      <label className="flex items-center gap-1 text-[11px] text-[var(--muted)]">
-        Aspect
-        <select
-          className="toolbar-select"
-          value={aspect}
-          onChange={(e) => setAspect(e.target.value as AspectRatioId)}
-        >
-          {(Object.keys(ASPECT_PRESETS) as AspectRatioId[]).map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
-      </label>
 
       <label className="flex items-center gap-1 text-[11px] text-[var(--muted)]">
         <input
@@ -427,6 +309,35 @@ export function Toolbar() {
       >
         {exporting ? "Exporting…" : "Export"}
       </button>
+
+      <div className="titlebar-spacer" data-tauri-drag-region />
+
+      <div className="window-controls">
+        <button
+          type="button"
+          className="win-btn"
+          title="Minimize"
+          onClick={() => void winAction("min")}
+        >
+          ─
+        </button>
+        <button
+          type="button"
+          className="win-btn"
+          title="Maximize"
+          onClick={() => void winAction("max")}
+        >
+          □
+        </button>
+        <button
+          type="button"
+          className="win-btn win-close"
+          title="Close"
+          onClick={() => void winAction("close")}
+        >
+          ×
+        </button>
+      </div>
 
       <OpenProjectDialog
         open={openProjectOpen}

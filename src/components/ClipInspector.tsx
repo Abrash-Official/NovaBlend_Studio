@@ -4,11 +4,14 @@ import { useEditorStore } from "../store/editorStore";
 import {
   BLEND_MODES,
   DEFAULT_EFFECTS,
+  KeyframeProp,
   TimelineClip,
   isStillClip,
   isTextClip,
+  keyframesFor,
 } from "../types/editor";
 import { NumberSlider } from "./ui/NumberSlider";
+import { KeyframeButton } from "./ui/KeyframeButton";
 import { IconAudio, IconCopy, IconTrash } from "./Icons";
 
 type TabId = "video" | "audio" | "speed" | "color" | "mask";
@@ -49,6 +52,27 @@ export function ClipInspector({
   const setStatus = useEditorStore((s) => s.setStatus);
   const bumpProcessing = useEditorStore((s) => s.bumpProcessing);
   const tracks = useEditorStore((s) => s.tracks);
+  const playhead = useEditorStore((s) => s.playhead);
+  const toggleKeyframe = useEditorStore((s) => s.toggleKeyframe);
+  const pushHistory = useEditorStore((s) => s.pushHistory);
+
+  const localT = Math.max(
+    0,
+    Math.min(clip.duration, playhead - clip.start),
+  );
+
+  function kfActive(prop: KeyframeProp) {
+    return keyframesFor(fx, prop).some((k) => Math.abs(k.time - localT) <= 0.05);
+  }
+
+  function kfToggle(prop: KeyframeProp, value: number) {
+    if (playhead < clip.start || playhead > clip.start + clip.duration) {
+      setStatus("Move playhead onto this clip to set a keyframe");
+      return;
+    }
+    pushHistory();
+    toggleKeyframe(prop, localT, value);
+  }
 
   const tabs: { id: TabId; label: string }[] = [
     { id: "video", label: "Video" },
@@ -96,25 +120,33 @@ export function ClipInspector({
       setStatus("No media path on this clip");
       return;
     }
+    const videoId = clip.id;
+    const videoStart = clip.start;
+    const videoDuration = clip.duration;
+    const videoIn = clip.inPoint;
+    const videoOut = clip.outPoint;
+    const videoVol = clip.effects?.volume ?? 1;
+
     setBusy(true);
     bumpProcessing(1);
-    setStatus("Extracting audio into Media Bin…");
+    setStatus("Extracting audio onto A1…");
     try {
       const audioPath = await extractMediaAudio({
         path: src,
-        inPoint: clip.inPoint,
-        outPoint: clip.outPoint,
+        inPoint: videoIn,
+        outPoint: videoOut,
       });
       const probe = await probeMedia(audioPath);
       const id = `media_${Math.random().toString(36).slice(2, 10)}`;
       const name = `${clip.name.replace(/\.[^.]+$/, "") || "Clip"} · audio`;
+      const audioDur =
+        probe.duration || Math.max(0.05, videoOut - videoIn);
       addMedia({
         id,
         name,
         path: probe.path || audioPath,
         previewPath: probe.path || audioPath,
-        duration:
-          probe.duration || Math.max(0.05, clip.outPoint - clip.inPoint),
+        duration: audioDur,
         width: 0,
         height: 0,
         hasVideo: false,
@@ -127,7 +159,38 @@ export function ClipInspector({
       });
       const audioTrack = tracks.find((t) => t.kind === "audio")?.index ?? 3;
       addClipFromMedia(id, audioTrack);
-      setStatus(`Audio added to Media Bin + A1: ${name}`);
+
+      // Align extracted clip to the video, mute/detach audio from V1
+      const state = useEditorStore.getState();
+      const audioClip = state.clips.find((c) => c.id === state.selectedClipId);
+      if (audioClip && audioClip.trackKind === "audio") {
+        const matchSpeed = Math.max(
+          0.05,
+          audioDur / Math.max(0.05, videoDuration),
+        );
+        updateClip(audioClip.id, {
+          start: videoStart,
+          inPoint: 0,
+          outPoint: audioDur,
+          effects: {
+            ...DEFAULT_EFFECTS(),
+            ...audioClip.effects,
+            volume: videoVol > 0.01 ? videoVol : 1,
+            speed: matchSpeed,
+          },
+        });
+      }
+      updateClip(videoId, {
+        hasAudio: false,
+        effects: {
+          ...DEFAULT_EFFECTS(),
+          ...clip.effects,
+          volume: 0,
+        },
+      });
+      if (audioClip) state.selectClip(audioClip.id);
+      setStatus(`Audio on A1 · video sound removed from V1`);
+      setTab("audio");
     } catch (e) {
       setStatus(`Extract failed: ${e}`);
     } finally {
@@ -214,6 +277,13 @@ export function ClipInspector({
                 }}
                 suffix="%"
                 onChange={(scale) => updateSelectedEffects({ scale })}
+                endSlot={
+                  <KeyframeButton
+                    active={kfActive("scale")}
+                    disabled={locked}
+                    onClick={() => kfToggle("scale", fx.scale)}
+                  />
+                }
               />
               <NumberSlider
                 label="Pos X"
@@ -228,6 +298,13 @@ export function ClipInspector({
                 }}
                 suffix="%"
                 onChange={(posX) => updateSelectedEffects({ posX })}
+                endSlot={
+                  <KeyframeButton
+                    active={kfActive("posX")}
+                    disabled={locked}
+                    onClick={() => kfToggle("posX", fx.posX ?? 0)}
+                  />
+                }
               />
               <NumberSlider
                 label="Pos Y"
@@ -242,6 +319,13 @@ export function ClipInspector({
                 }}
                 suffix="%"
                 onChange={(posY) => updateSelectedEffects({ posY })}
+                endSlot={
+                  <KeyframeButton
+                    active={kfActive("posY")}
+                    disabled={locked}
+                    onClick={() => kfToggle("posY", fx.posY ?? 0)}
+                  />
+                }
               />
               <div className="mb-3 flex flex-wrap gap-1">
                 {(
@@ -272,6 +356,13 @@ export function ClipInspector({
                 format={(v) => String(Math.round(v))}
                 suffix="°"
                 onChange={(rotation) => updateSelectedEffects({ rotation })}
+                endSlot={
+                  <KeyframeButton
+                    active={kfActive("rotation")}
+                    disabled={locked}
+                    onClick={() => kfToggle("rotation", fx.rotation)}
+                  />
+                }
               />
               <NumberSlider
                 label="Opacity"
@@ -286,7 +377,17 @@ export function ClipInspector({
                 }}
                 suffix="%"
                 onChange={(opacity) => updateSelectedEffects({ opacity })}
+                endSlot={
+                  <KeyframeButton
+                    active={kfActive("opacity")}
+                    disabled={locked}
+                    onClick={() => kfToggle("opacity", fx.opacity)}
+                  />
+                }
               />
+              <p className="mt-1 text-[10px] text-[var(--muted)]">
+                Diamond adds/removes a keyframe at the playhead for that property.
+              </p>
             </div>
 
             <div className="inspector-card mt-2">
@@ -362,62 +463,89 @@ export function ClipInspector({
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
               Audio Adjustments
             </div>
-            <button
-              type="button"
-              className="btn btn-accent mb-3 w-full justify-center gap-2"
-              disabled={busy || !clip.hasAudio || isStillClip(clip)}
-              onClick={() => void extractAudio()}
-            >
-              <IconAudio size={14} />
-              {busy ? "Extracting…" : "Extract Audio to Track"}
-            </button>
-            <NumberSlider
-              label="Volume"
-              min={0}
-              max={2}
-              step={0.01}
-              value={fx.volume ?? 1}
-              format={(v) => volumeToDb(v)}
-              parse={(raw) => {
-                const cleaned = raw.replace(/[^\d.\-+eE]/g, "").trim();
-                if (cleaned === "" || cleaned === "-∞" || cleaned === "-Inf") return 0;
-                const n = Number(cleaned);
-                if (!Number.isFinite(n)) return null;
-                // Treat as dB if |n| > 2 or string had "dB" feel — volume field shows dB
-                return Math.pow(10, n / 20);
-              }}
-              suffix="dB"
-              onChange={(volume) => updateSelectedEffects({ volume })}
-            />
-            <button
-              type="button"
-              className={`btn mb-3 w-full ${fx.volume < 0.01 ? "btn-accent" : ""}`}
-              onClick={() =>
-                updateSelectedEffects({
-                  volume: (fx.volume ?? 1) < 0.01 ? 1 : 0,
-                })
-              }
-            >
-              {(fx.volume ?? 1) < 0.01 ? "Unmute Audio" : "Mute Audio"}
-            </button>
-            <NumberSlider
-              label="Fade In"
-              min={0}
-              max={3}
-              step={0.05}
-              value={fx.audioFadeIn ?? 0}
-              suffix="s"
-              onChange={(audioFadeIn) => updateSelectedEffects({ audioFadeIn })}
-            />
-            <NumberSlider
-              label="Fade Out"
-              min={0}
-              max={3}
-              step={0.05}
-              value={fx.audioFadeOut ?? 0}
-              suffix="s"
-              onChange={(audioFadeOut) => updateSelectedEffects({ audioFadeOut })}
-            />
+            {!clip.hasAudio ? (
+              <div className="mb-3 rounded border border-[var(--line)] bg-[var(--bg-1)] px-2 py-2 text-[11px] text-[var(--muted)]">
+                Video sound detached — edit the clip on <strong>A1</strong> for
+                volume, voice changer, and speed. Waveform no longer shows on V1.
+                <button
+                  type="button"
+                  className="btn mt-2 w-full justify-center"
+                  onClick={() =>
+                    updateClip(clip.id, {
+                      hasAudio: true,
+                      effects: { ...fx, volume: fx.volume < 0.01 ? 1 : fx.volume },
+                    })
+                  }
+                >
+                  Restore video audio
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-accent mb-3 w-full justify-center gap-2"
+                disabled={busy || isStillClip(clip)}
+                onClick={() => void extractAudio()}
+              >
+                <IconAudio size={14} />
+                {busy ? "Extracting…" : "Extract Audio to Track"}
+              </button>
+            )}
+            {clip.hasAudio && (
+              <>
+                <NumberSlider
+                  label="Volume"
+                  min={0}
+                  max={2}
+                  step={0.01}
+                  value={fx.volume ?? 1}
+                  format={(v) => volumeToDb(v)}
+                  parse={(raw) => {
+                    const cleaned = raw.replace(/[^\d.\-+eE]/g, "").trim();
+                    if (cleaned === "" || cleaned === "-∞" || cleaned === "-Inf")
+                      return 0;
+                    const n = Number(cleaned);
+                    if (!Number.isFinite(n)) return null;
+                    return Math.pow(10, n / 20);
+                  }}
+                  suffix="dB"
+                  onChange={(volume) => updateSelectedEffects({ volume })}
+                />
+                <button
+                  type="button"
+                  className={`btn mb-3 w-full ${fx.volume < 0.01 ? "btn-accent" : ""}`}
+                  onClick={() =>
+                    updateSelectedEffects({
+                      volume: (fx.volume ?? 1) < 0.01 ? 1 : 0,
+                    })
+                  }
+                >
+                  {(fx.volume ?? 1) < 0.01 ? "Unmute Audio" : "Mute Audio"}
+                </button>
+                <NumberSlider
+                  label="Fade In"
+                  min={0}
+                  max={3}
+                  step={0.05}
+                  value={fx.audioFadeIn ?? 0}
+                  suffix="s"
+                  onChange={(audioFadeIn) =>
+                    updateSelectedEffects({ audioFadeIn })
+                  }
+                />
+                <NumberSlider
+                  label="Fade Out"
+                  min={0}
+                  max={3}
+                  step={0.05}
+                  value={fx.audioFadeOut ?? 0}
+                  suffix="s"
+                  onChange={(audioFadeOut) =>
+                    updateSelectedEffects({ audioFadeOut })
+                  }
+                />
+              </>
+            )}
           </div>
         )}
 

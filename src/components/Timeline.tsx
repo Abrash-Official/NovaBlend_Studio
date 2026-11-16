@@ -1,8 +1,40 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { createFreezeClip } from "../lib/api";
-import { isFxClip, isStillClip, isTextClip, TimelineClip } from "../types/editor";
+import {
+  ASPECT_PRESETS,
+  AspectRatioId,
+  isFxClip,
+  isStillClip,
+  isTextClip,
+  TimelineClip,
+  TrackKind,
+} from "../types/editor";
 import { useEditorStore } from "../store/editorStore";
+import { snapClipStart } from "../lib/snap";
+import { ClipWaveform } from "./ClipWaveform";
+import {
+  IconAdd,
+  IconCopy,
+  IconCrop,
+  IconEye,
+  IconEyeOff,
+  IconFreeze,
+  IconFullscreen,
+  IconKeyframe,
+  IconLock,
+  IconMagnet,
+  IconMute,
+  IconRedo,
+  IconRemoveBg,
+  IconReverse,
+  IconSplit,
+  IconTrash,
+  IconUndo,
+  IconUnlock,
+  IconVolume,
+} from "./Icons";
 
 function clampMenuPos(x: number, y: number, w: number, h: number) {
   const pad = 10;
@@ -11,19 +43,6 @@ function clampMenuPos(x: number, y: number, w: number, h: number) {
     y: Math.min(Math.max(pad, y), Math.max(pad, window.innerHeight - h - pad)),
   };
 }
-import {
-  IconCopy,
-  IconEye,
-  IconEyeOff,
-  IconFreeze,
-  IconLock,
-  IconMute,
-  IconReverse,
-  IconSplit,
-  IconTrash,
-  IconUnlock,
-  IconVolume,
-} from "./Icons";
 
 type DragMode = "move" | "trim-in" | "trim-out";
 
@@ -43,12 +62,41 @@ type CtxMenu = {
   clipId: string;
 };
 
-const CLIP_H = 32;
-const LANE_GAP = 4;
-const LANE_PAD = 6;
-const LANE_H = CLIP_H + LANE_GAP;
-const TRACK_MIN_H = LANE_PAD * 2 + CLIP_H; // pad + one clip, no overflow
+const LANE_GAP = 3;
+const LANE_PAD = 5;
 const TRACK_HEADER_W = 100;
+
+/** CapCut-like: text thin, video tall (film + wave), audio mid with dense wave. */
+function clipHeightForKind(kind: TrackKind): number {
+  switch (kind) {
+    case "text":
+      return 20;
+    case "fx":
+      return 26;
+    case "audio":
+      return 44;
+    case "video":
+    default:
+      return 54;
+  }
+}
+
+function collectKeyframeTimes(clip: TimelineClip): number[] {
+  const fx = clip.effects;
+  if (!fx) return [];
+  const lists = [
+    fx.scaleKeyframes,
+    fx.opacityKeyframes,
+    fx.posXKeyframes,
+    fx.posYKeyframes,
+    fx.rotationKeyframes,
+  ];
+  const times = new Set<number>();
+  for (const list of lists) {
+    for (const k of list || []) times.add(k.time);
+  }
+  return [...times].sort((a, b) => a - b);
+}
 
 /** Pack overlapping clips into visual lanes (overlap allowed, stacked for readability). */
 function assignLanes(trackClips: TimelineClip[]): { lanes: Map<string, number>; laneCount: number } {
@@ -112,6 +160,25 @@ export function Timeline() {
     fps,
     bumpProcessing,
     updateTrack,
+    media,
+    magnetEnabled,
+    setMagnetEnabled,
+    pushHistory,
+    undo,
+    redo,
+    past,
+    future,
+    timelineTabs,
+    activeTimelineId,
+    addTimeline,
+    switchTimeline,
+    removeSelectedClip,
+    applyCropMask,
+    toggleRemoveBg,
+    addQuickKeyframe,
+    splitSelectedAtPlayhead,
+    aspect,
+    setAspect,
   } = useEditorStore();
 
   const duration = timelineDuration();
@@ -139,14 +206,17 @@ export function Timeline() {
       const trackClips = clips.filter((c) => c.trackIndex === track.index);
       const { lanes, laneCount } = assignLanes(trackClips);
       const lanesUsed = Math.max(1, laneCount);
-      // Exact fit: top/bottom pad + clips + gaps between lanes only
-      const height = LANE_PAD * 2 + lanesUsed * CLIP_H + (lanesUsed - 1) * LANE_GAP;
+      const clipH = clipHeightForKind(track.kind);
+      const laneH = clipH + LANE_GAP;
+      const height = LANE_PAD * 2 + lanesUsed * clipH + (lanesUsed - 1) * LANE_GAP;
       return {
         track,
         trackClips,
         lanes,
         laneCount: lanesUsed,
-        height: Math.max(TRACK_MIN_H, height),
+        clipH,
+        laneH,
+        height: Math.max(LANE_PAD * 2 + clipH, height),
       };
     });
   }, [tracks, clips]);
@@ -197,9 +267,21 @@ export function Timeline() {
             ? state.tracks.find((t) => t.index === over)
             : undefined;
         const canDrop = target && target.kind === clip.trackKind;
+        let nextStart = Math.max(0, drag.originStart + dTime);
+        if (state.magnetEnabled) {
+          const threshold = Math.max(0.05, 10 / zoom);
+          nextStart = snapClipStart({
+            start: nextStart,
+            duration: clip.duration,
+            clipId: clip.id,
+            clips: state.clips,
+            playhead: state.playhead,
+            threshold,
+          });
+        }
         moveClip(
           drag.id,
-          Math.max(0, drag.originStart + dTime),
+          nextStart,
           canDrop ? target.index : undefined,
         );
         return;
@@ -295,6 +377,7 @@ export function Timeline() {
     setMenu(null);
     setPlaying(false);
     selectClip(clipId);
+    pushHistory();
     setDrag({
       mode,
       id: clipId,
@@ -384,25 +467,138 @@ export function Timeline() {
 
   return (
     <section className="panel mx-2 mb-1 flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-3 border-b border-[var(--line)] px-3 py-1.5">
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-          Timeline
+      <div className="tl-toolbar shrink-0 border-b border-[var(--line)] px-2 py-1">
+        <div className="tl-tabs">
+          <button
+            type="button"
+            className="tl-tool"
+            title="New timeline in this project"
+            onClick={() => addTimeline()}
+          >
+            <IconAdd size={14} />
+          </button>
+          {timelineTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`tl-tab ${tab.id === activeTimelineId ? "active" : ""}`}
+              onClick={() => switchTimeline(tab.id)}
+            >
+              {tab.name}
+            </button>
+          ))}
         </div>
-        <div className="text-[10px] text-[var(--muted)]">
-          Ctrl+S save · Del delete · S split · Space play · Ctrl+D duplicate
+        <div className="tl-tools">
+          <button
+            type="button"
+            className="tl-tool"
+            title="Undo (Ctrl+Z)"
+            disabled={!past.length}
+            onClick={() => undo()}
+          >
+            <IconUndo size={14} />
+          </button>
+          <button
+            type="button"
+            className="tl-tool"
+            title="Redo (Ctrl+Y)"
+            disabled={!future.length}
+            onClick={() => redo()}
+          >
+            <IconRedo size={14} />
+          </button>
+          <span className="tl-sep" />
+          <button
+            type="button"
+            className="tl-tool"
+            title="Split at playhead (S)"
+            onClick={() => splitSelectedAtPlayhead()}
+          >
+            <IconSplit size={14} />
+          </button>
+          <button
+            type="button"
+            className="tl-tool danger"
+            title="Delete selected (Del)"
+            onClick={() => removeSelectedClip()}
+          >
+            <IconTrash size={14} />
+          </button>
+          <button
+            type="button"
+            className="tl-tool"
+            title="Crop mask"
+            onClick={() => applyCropMask()}
+          >
+            <IconCrop size={14} />
+          </button>
+          <button
+            type="button"
+            className="tl-tool"
+            title="Remove background"
+            onClick={() => toggleRemoveBg()}
+          >
+            <IconRemoveBg size={14} />
+          </button>
+          <button
+            type="button"
+            className="tl-tool"
+            title="Keyframe at playhead"
+            onClick={() => addQuickKeyframe()}
+          >
+            <IconKeyframe size={14} />
+          </button>
+          <span className="tl-sep" />
+          <button
+            type="button"
+            className="tl-tool"
+            title="Preview fullscreen"
+            onClick={() => {
+              const el = document.querySelector(".preview-stage");
+              if (el && "requestFullscreen" in el) {
+                void (el as HTMLElement).requestFullscreen().catch(() => {
+                  setStatus("Fullscreen not available");
+                });
+              }
+            }}
+          >
+            <IconFullscreen size={14} />
+          </button>
+          <button
+            type="button"
+            className={`tl-tool ${magnetEnabled ? "on" : ""}`}
+            title="Auto magnet / snap (P)"
+            onClick={() => setMagnetEnabled(!magnetEnabled)}
+          >
+            <IconMagnet size={14} />
+          </button>
+          <label className="ml-2 flex items-center gap-1 text-[11px] text-[var(--muted)]">
+            Ratio
+            <select
+              className="toolbar-select"
+              value={aspect}
+              onChange={(e) => setAspect(e.target.value as AspectRatioId)}
+              title="Project aspect ratio"
+            >
+              {(Object.keys(ASPECT_PRESETS) as AspectRatioId[]).map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ml-2 flex items-center gap-2 text-xs text-[var(--muted)]">
+            Zoom
+            <input
+              className="slider w-28"
+              type="range"
+              min={24}
+              max={160}
+              value={zoom}
+              onChange={(e) => setZoom(Number(e.target.value))}
+            />
+          </label>
         </div>
-        <div className="flex-1" />
-        <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-          Zoom
-          <input
-            className="slider w-32"
-            type="range"
-            min={24}
-            max={160}
-            value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
-          />
-        </label>
       </div>
 
       <div
@@ -431,7 +627,7 @@ export function Timeline() {
             </div>
           </div>
 
-          {trackLayouts.map(({ track, trackClips, lanes, laneCount, height }) => (
+          {trackLayouts.map(({ track, trackClips, lanes, laneCount, height, clipH, laneH }) => (
             <div
               key={track.id}
               ref={(el) => {
@@ -506,13 +702,12 @@ export function Timeline() {
                 className="relative overflow-hidden"
                 style={{ width: widthPx, height, minHeight: height }}
               >
-                {/* Lane guide lines */}
                 {laneCount > 1 &&
                   Array.from({ length: laneCount - 1 }).map((_, i) => (
                     <div
                       key={`guide-${i}`}
                       className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-[var(--line)]/70"
-                      style={{ top: LANE_PAD + (i + 1) * LANE_H - LANE_GAP / 2 }}
+                      style={{ top: LANE_PAD + (i + 1) * laneH - LANE_GAP / 2 }}
                     />
                   ))}
 
@@ -520,7 +715,7 @@ export function Timeline() {
                   const lane = lanes.get(clip.id) ?? 0;
                   const left = clip.start * zoom;
                   const width = Math.max(16, clip.duration * zoom);
-                  const top = LANE_PAD + lane * LANE_H;
+                  const top = LANE_PAD + lane * laneH;
                   const selected = clip.id === selectedClipId;
                   const color =
                     clip.trackKind === "audio"
@@ -530,23 +725,58 @@ export function Timeline() {
                         : isTextClip(clip)
                           ? "var(--clip-t)"
                           : "var(--clip-v)";
-                  const handleW = 8;
+                  const handleW = 7;
                   const brightness = 1 + (lane % 3) * 0.08;
+                  const mediaItem = media.find((m) => m.id === clip.mediaId);
+                  const wavePath =
+                    clip.previewPath ||
+                    clip.mediaPath ||
+                    mediaItem?.previewPath ||
+                    mediaItem?.path ||
+                    "";
+                  const mediaDur = Math.max(
+                    0.05,
+                    mediaItem?.duration || clip.outPoint || clip.duration,
+                  );
+                  const showWave =
+                    !!wavePath &&
+                    !!clip.hasAudio &&
+                    (clip.trackKind === "audio" ||
+                      (clip.trackKind === "video" && !isStillClip(clip)));
+                  const thumb = mediaItem?.thumbPath;
+                  const kfTimes = collectKeyframeTimes(clip);
+                  const innerW = Math.max(0, width - handleW * 2);
+                  const fadeInSec =
+                    clip.trackKind === "audio" || clip.hasAudio
+                      ? clip.effects.audioFadeIn || 0
+                      : clip.effects.fadeIn || 0;
+                  const fadeOutSec =
+                    clip.trackKind === "audio" || clip.hasAudio
+                      ? clip.effects.audioFadeOut || 0
+                      : clip.effects.fadeOut || 0;
+                  const fadeInPx = Math.min(
+                    innerW * 0.48,
+                    Math.max(0, fadeInSec) * zoom,
+                  );
+                  const fadeOutPx = Math.min(
+                    innerW * 0.48,
+                    Math.max(0, fadeOutSec) * zoom,
+                  );
 
                   return (
                     <div
                       key={clip.id}
-                      className="absolute overflow-hidden select-none text-[11px] text-white"
+                      className={`absolute overflow-hidden select-none text-white tl-clip tl-clip-${clip.trackKind}`}
                       style={{
                         left,
                         width,
                         top,
-                        height: CLIP_H,
-                        borderRadius: 5,
+                        height: clipH,
+                        borderRadius: clip.trackKind === "text" ? 3 : 5,
                         background: laneTint(color, lane),
                         filter: `brightness(${brightness})`,
                         boxShadow: selected
-                          ? "inset 0 0 0 1px rgba(255,255,255,0.7)"
+                          ? "inset 0 0 0 1px rgba(255,255,255,0.75)"
                           : "inset 0 0 0 1px rgba(255,255,255,0.12)",
                         opacity: track.hidden ? 0.35 : track.muted ? 0.7 : 0.96,
                         zIndex: selected || drag?.id === clip.id ? 8 : 1 + lane,
@@ -572,24 +802,131 @@ export function Timeline() {
                       />
 
                       <div
-                        className="absolute bottom-0 top-0 cursor-grab overflow-hidden px-2 active:cursor-grabbing"
-                        style={{
-                          left: handleW,
-                          right: handleW,
-                          display: "flex",
-                          flexDirection: "column",
-                          justifyContent: "center",
-                          gap: 1,
-                        }}
+                        className="absolute bottom-0 top-0 cursor-grab overflow-hidden active:cursor-grabbing"
+                        style={{ left: handleW, right: handleW }}
                         onMouseDown={(e) => beginDrag(e, clip.id, "move", clip)}
                         onContextMenu={(e) => openClipMenu(e, clip.id)}
                       >
-                        <div className="truncate font-medium leading-none">
-                          {clip.name}
+                        {clip.trackKind === "video" && thumb && (
+                          <div
+                            className="tl-filmstrip"
+                            style={{
+                              backgroundImage: `url(${convertFileSrc(thumb)})`,
+                            }}
+                          />
+                        )}
+
+                        {showWave && clip.trackKind === "video" && (
+                          <div className="tl-wave-overlay">
+                            <ClipWaveform
+                              path={wavePath}
+                              width={innerW}
+                              height={Math.max(14, Math.floor(clipH * 0.42))}
+                              mode="overlay"
+                              color="rgba(255,255,255,0.88)"
+                              inPoint={clip.inPoint}
+                              outPoint={clip.outPoint}
+                              mediaDuration={mediaDur}
+                              amplitude={clip.effects.volume ?? 1}
+                            />
+                          </div>
+                        )}
+
+                        {showWave && clip.trackKind === "audio" && (
+                          <div className="tl-wave-fill">
+                            <ClipWaveform
+                              path={wavePath}
+                              width={innerW}
+                              height={clipH}
+                              mode="fill"
+                              color="rgba(210, 230, 255, 0.95)"
+                              inPoint={clip.inPoint}
+                              outPoint={clip.outPoint}
+                              mediaDuration={mediaDur}
+                              amplitude={clip.effects.volume ?? 1}
+                            />
+                          </div>
+                        )}
+
+                        {fadeInPx > 2 && (
+                          <div
+                            className="tl-fade"
+                            style={{ width: fadeInPx }}
+                            title={`Fade in ${fadeInSec.toFixed(2)}s`}
+                          >
+                            <svg
+                              className="tl-fade-svg"
+                              viewBox="0 0 100 100"
+                              preserveAspectRatio="none"
+                              aria-hidden
+                            >
+                              {/* CapCut-like ease curve: quiet → full */}
+                              <path
+                                d="M0 100 C 25 100, 55 55, 100 0 L 0 0 Z"
+                                fill="rgba(0,0,0,0.58)"
+                              />
+                              <path
+                                d="M0 100 C 25 100, 55 55, 100 0"
+                                fill="none"
+                                stroke="rgba(255,255,255,0.45)"
+                                strokeWidth="1.5"
+                                vectorEffect="non-scaling-stroke"
+                              />
+                            </svg>
+                          </div>
+                        )}
+                        {fadeOutPx > 2 && (
+                          <div
+                            className="tl-fade tl-fade-end"
+                            style={{ width: fadeOutPx }}
+                            title={`Fade out ${fadeOutSec.toFixed(2)}s`}
+                          >
+                            <svg
+                              className="tl-fade-svg"
+                              viewBox="0 0 100 100"
+                              preserveAspectRatio="none"
+                              aria-hidden
+                            >
+                              <path
+                                d="M100 100 C 75 100, 45 55, 0 0 L 100 0 Z"
+                                fill="rgba(0,0,0,0.58)"
+                              />
+                              <path
+                                d="M100 100 C 75 100, 45 55, 0 0"
+                                fill="none"
+                                stroke="rgba(255,255,255,0.45)"
+                                strokeWidth="1.5"
+                                vectorEffect="non-scaling-stroke"
+                              />
+                            </svg>
+                          </div>
+                        )}
+
+                        <div
+                          className={`tl-clip-label ${clip.trackKind === "text" ? "thin" : ""}`}
+                        >
+                          <div className="truncate font-medium leading-none">
+                            {clip.name}
+                          </div>
+                          {clip.trackKind !== "text" && clipH >= 36 && (
+                            <div className="truncate text-[10px] leading-none opacity-80">
+                              {clip.duration.toFixed(1)}s
+                            </div>
+                          )}
                         </div>
-                        <div className="truncate text-[10px] leading-none opacity-80">
-                          {clip.duration.toFixed(1)}s · L{lane + 1}
-                        </div>
+
+                        {kfTimes.map((t) => {
+                          const x = (t / Math.max(0.05, clip.duration)) * innerW;
+                          if (x < 2 || x > innerW - 2) return null;
+                          return (
+                            <span
+                              key={`kf-${t}`}
+                              className="tl-kf-mark"
+                              style={{ left: x }}
+                              title={`Keyframe @ ${t.toFixed(2)}s`}
+                            />
+                          );
+                        })}
                       </div>
 
                       <div

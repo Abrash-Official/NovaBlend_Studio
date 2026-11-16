@@ -45,9 +45,13 @@ export function IconTrash(props: IconProps) {
 export function IconSplit(props: IconProps) {
   return (
     <Svg {...props}>
-      <path d="M12 3v18" />
-      <path d="M5 8l7 4 7-4" />
-      <path d="M5 16l7-4 7 4" />
+      {/* Professional razor / blade cut */}
+      <path d="M4 4l6 6" />
+      <path d="M14 14l6 6" />
+      <path d="M10 4l10 10" />
+      <circle cx="7.5" cy="7.5" r="2.2" />
+      <circle cx="16.5" cy="16.5" r="2.2" />
+      <path d="M12 2v20" strokeDasharray="2 3" />
     </Svg>
   );
 }
@@ -106,9 +110,10 @@ export function IconAdd(props: IconProps) {
 export function IconText(props: IconProps) {
   return (
     <Svg {...props}>
-      <path d="M4 6h16" />
-      <path d="M12 6v12" />
-      <path d="M8 18h8" />
+      {/* Professional T-box title tool */}
+      <rect x="3.5" y="4" width="17" height="16" rx="2" />
+      <path d="M8 9h8" strokeWidth="2" />
+      <path d="M12 9v8" strokeWidth="2" />
     </Svg>
   );
 }
@@ -265,6 +270,71 @@ export function IconVolume(props: IconProps) {
       <path d="M11 5L6 9H3v6h3l5 4V5z" />
       <path d="M15.5 8.5a5 5 0 0 1 0 7" />
       <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    </Svg>
+  );
+}
+
+export function IconUndo(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9 14L4 9l5-5" />
+      <path d="M4 9h10a5 5 0 0 1 0 10h-3" />
+    </Svg>
+  );
+}
+
+export function IconRedo(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M15 14l5-5-5-5" />
+      <path d="M20 9H10a5 5 0 0 0 0 10h3" />
+    </Svg>
+  );
+}
+
+export function IconCrop(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6 3v13a2 2 0 0 0 2 2h13" />
+      <path d="M18 21V8a2 2 0 0 0-2-2H3" />
+    </Svg>
+  );
+}
+
+export function IconKeyframe(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3l7 9-7 9-7-9 7-9z" />
+    </Svg>
+  );
+}
+
+export function IconMagnet(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6 4v8a6 6 0 0 0 12 0V4" />
+      <path d="M6 4h3v8M15 4h3v8" />
+    </Svg>
+  );
+}
+
+export function IconFullscreen(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 9V4h5" />
+      <path d="M20 9V4h-5" />
+      <path d="M4 15v5h5" />
+      <path d="M20 15v5h-5" />
+    </Svg>
+  );
+}
+
+export function IconRemoveBg(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5" />
+      <path d="M3 3l18 18" />
     </Svg>
   );
 }

@@ -1,4 +1,4 @@
-import { CSSProperties, useEffect, useState } from "react";
+import { CSSProperties, ReactNode, useEffect, useState } from "react";
 
 type Props = {
   label: string;
@@ -12,6 +12,8 @@ type Props = {
   parse?: (raw: string) => number | null;
   suffix?: string;
   onChange: (v: number) => void;
+  /** CapCut-style keyframe diamond (or other trailing control) */
+  endSlot?: ReactNode;
 };
 
 function clamp(n: number, min: number, max: number) {
@@ -29,6 +31,7 @@ export function NumberSlider({
   parse,
   suffix,
   onChange,
+  endSlot,
 }: Props) {
   const shown = format ? format(value) : value.toFixed(step < 0.1 ? 2 : step < 1 ? 1 : 0);
   const [draft, setDraft] = useState(shown);
@@ -64,28 +67,31 @@ export function NumberSlider({
     <div className="num-slider">
       <div className="num-slider-head">
         <span className="num-slider-label">{label}</span>
-        <div className="num-slider-field">
-          <input
-            className="num-slider-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => commit(draft)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.currentTarget.blur();
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                onChange(clamp(value + step, min, max));
-              }
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                onChange(clamp(value - step, min, max));
-              }
-            }}
-            inputMode="decimal"
-          />
-          {suffix ? <span className="num-slider-suffix">{suffix}</span> : null}
+        <div className="num-slider-right">
+          <div className="num-slider-field">
+            <input
+              className="num-slider-input"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => commit(draft)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  onChange(clamp(value + step, min, max));
+                }
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  onChange(clamp(value - step, min, max));
+                }
+              }}
+              inputMode="decimal"
+            />
+            {suffix ? <span className="num-slider-suffix">{suffix}</span> : null}
+          </div>
+          {endSlot}
         </div>
       </div>
       <div className="num-slider-track-wrap">

@@ -14,6 +14,10 @@ fn default_mask_shape() -> String {
     "box".into()
 }
 
+fn default_voice_effect() -> String {
+    "none".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Keyframe {
@@ -49,6 +53,8 @@ pub struct ClipEffects {
     pub audio_fade_out: f64,
     #[serde(default)]
     pub audio_enhance: bool,
+    #[serde(default = "default_voice_effect")]
+    pub voice_effect: String,
     #[serde(default = "default_blend")]
     pub blend_mode: String,
     pub scale: f64,
@@ -95,6 +101,7 @@ impl Default for ClipEffects {
             audio_fade_in: 0.0,
             audio_fade_out: 0.0,
             audio_enhance: false,
+            voice_effect: "none".into(),
             blend_mode: "normal".into(),
             scale: 1.0,
             rotation: 0.0,
@@ -606,12 +613,57 @@ fn effect_filters(fx: &ClipEffects, clip_duration: f64) -> Vec<String> {
     filters
 }
 
+fn push_atempo(filters: &mut Vec<String>, mut factor: f64) {
+    // atempo supports 0.5–2.0; chain for wider range
+    factor = factor.clamp(0.25, 4.0);
+    while factor > 2.0 + 1e-6 {
+        filters.push("atempo=2.0".into());
+        factor /= 2.0;
+    }
+    while factor < 0.5 - 1e-6 {
+        filters.push("atempo=0.5".into());
+        factor /= 0.5;
+    }
+    if (factor - 1.0).abs() > 0.001 {
+        filters.push(format!("atempo={factor:.4}"));
+    }
+}
+
 fn audio_filters(fx: &ClipEffects) -> Vec<String> {
     let mut filters = Vec::new();
-    let speed = fx.speed.clamp(0.5, 2.0);
-    if (speed - 1.0).abs() > 0.001 {
-        filters.push(format!("atempo={speed}"));
+    let speed = fx.speed.clamp(0.25, 4.0);
+
+    match fx.voice_effect.as_str() {
+        "chipmunk" => {
+            filters.push("asetrate=44100*1.28".into());
+            filters.push("aresample=44100".into());
+            push_atempo(&mut filters, speed / 1.28);
+        }
+        "deep" => {
+            filters.push("asetrate=44100*0.78".into());
+            filters.push("aresample=44100".into());
+            push_atempo(&mut filters, speed / 0.78);
+        }
+        "robot" => {
+            filters.push("tremolo=f=16:d=0.65".into());
+            filters.push("aphaser=in_gain=0.4:out_gain=0.8:delay=2.5:decay=0.4:speed=0.6".into());
+            push_atempo(&mut filters, speed);
+        }
+        "cave" => {
+            filters.push("aecho=0.8:0.88:60|80:0.4|0.3".into());
+            push_atempo(&mut filters, speed);
+        }
+        "radio" => {
+            filters.push("highpass=f=400".into());
+            filters.push("lowpass=f=2800".into());
+            filters.push("volume=1.15".into());
+            push_atempo(&mut filters, speed);
+        }
+        _ => {
+            push_atempo(&mut filters, speed);
+        }
     }
+
     if fx.reverse {
         filters.push("areverse".into());
     }

@@ -27,6 +27,7 @@ import {
   IconReveal,
   IconTrash,
 } from "./Icons";
+import { WindowChrome } from "./WindowChrome";
 
 const HOME_ASPECTS: AspectRatioId[] = ["16:9", "9:16", "1:1", "21:9"];
 
@@ -370,11 +371,12 @@ export function HomeScreen() {
 
   return (
     <div className="home-shell">
+      <WindowChrome />
       <header className="home-top">
         <div className="flex min-w-0 items-center gap-3">
           <img src="/icon.svg" alt="" className="h-8 w-8 shrink-0" />
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold tracking-wide">NovaBlend Studio</div>
+            <div className="text-[15px] font-semibold tracking-wide">Projects</div>
             <div className="text-[11px] text-[var(--muted)]">v1.0.0</div>
           </div>
         </div>

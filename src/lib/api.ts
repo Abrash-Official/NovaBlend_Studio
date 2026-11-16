@@ -41,6 +41,8 @@ function toBackendEffects(fx: ClipEffects) {
     audioFadeIn: fx.audioFadeIn ?? 0,
     audioFadeOut: fx.audioFadeOut ?? 0,
     audioEnhance: false,
+    voiceEffect: fx.voiceEffect || "none",
+    removeBg: !!fx.removeBg,
     blendMode: fx.blendMode || "normal",
     scale: fx.scale,
     rotation: fx.rotation,
@@ -62,8 +64,11 @@ function toBackendEffects(fx: ClipEffects) {
     fadeOut: fx.fadeOut || 0,
     pipX: fx.pipX,
     pipY: fx.pipY,
-    scaleKeyframes: fx.scaleKeyframes,
-    opacityKeyframes: fx.opacityKeyframes,
+    scaleKeyframes: fx.scaleKeyframes || [],
+    opacityKeyframes: fx.opacityKeyframes || [],
+    posXKeyframes: fx.posXKeyframes || [],
+    posYKeyframes: fx.posYKeyframes || [],
+    rotationKeyframes: fx.rotationKeyframes || [],
   };
 }
 

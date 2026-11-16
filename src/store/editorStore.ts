@@ -10,13 +10,23 @@ import {
   isFxClip,
   isStillClip,
   isTextClip,
+  keyframeListKey,
+  KeyframeProp,
   LibraryTool,
   MediaItem,
   ProjectSnapshot,
   TextStyle,
+  TimelineBundle,
   TimelineClip,
+  TimelineTab,
   Track,
 } from "../types/editor";
+
+type HistorySnap = {
+  clips: TimelineClip[];
+  tracks: Track[];
+  selectedClipId: string | null;
+};
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -144,6 +154,12 @@ interface EditorState {
   layoutRightWidth: number;
   layoutTimelineHeight: number;
   lastAutoSavedAt: number | null;
+  magnetEnabled: boolean;
+  past: HistorySnap[];
+  future: HistorySnap[];
+  timelineTabs: TimelineTab[];
+  activeTimelineId: string;
+  timelineBundles: Record<string, TimelineBundle>;
 
   setView: (v: AppView) => void;
   setLibraryTool: (t: LibraryTool) => void;
@@ -200,13 +216,39 @@ interface EditorState {
     timelineDelta: number,
   ) => void;
   moveClip: (id: string, newStart: number, newTrack?: number) => void;
-  addKeyframe: (prop: "scale" | "opacity", time: number, value: number) => void;
+  addKeyframe: (prop: KeyframeProp, time: number, value: number) => void;
+  toggleKeyframe: (prop: KeyframeProp, time: number, value: number) => void;
   timelineDuration: () => number;
+
+  setMagnetEnabled: (v: boolean) => void;
+  pushHistory: () => void;
+  undo: () => void;
+  redo: () => void;
+  addTimeline: () => void;
+  switchTimeline: (id: string) => void;
+  applyCropMask: () => void;
+  toggleRemoveBg: () => void;
+  addQuickKeyframe: () => void;
+  clipboardClip: TimelineClip | null;
+  copySelectedClip: () => void;
+  pasteClipboard: () => void;
 
   newProject: (name?: string, aspect?: AspectRatioId) => void;
   loadSnapshot: (snap: ProjectSnapshot) => void;
   toSnapshot: () => ProjectSnapshot;
   bumpProcessing: (delta: number) => void;
+}
+
+function cloneHistory(s: {
+  clips: TimelineClip[];
+  tracks: Track[];
+  selectedClipId: string | null;
+}): HistorySnap {
+  return {
+    clips: structuredClone(s.clips),
+    tracks: structuredClone(s.tracks),
+    selectedClipId: s.selectedClipId,
+  };
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -238,8 +280,221 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   layoutRightWidth: LAYOUT_DEFAULTS.rightWidth,
   layoutTimelineHeight: LAYOUT_DEFAULTS.timelineHeight,
   lastAutoSavedAt: null,
+  magnetEnabled: true,
+  past: [],
+  future: [],
+  timelineTabs: [{ id: "tl_1", name: "Timeline 01" }],
+  activeTimelineId: "tl_1",
+  timelineBundles: {},
+  clipboardClip: null,
 
   setView: (v) => set({ view: v }),
+  setMagnetEnabled: (v) => set({ magnetEnabled: v }),
+
+  copySelectedClip: () => {
+    const s = get();
+    const clip = s.clips.find((c) => c.id === s.selectedClipId);
+    if (!clip) {
+      set({ status: "Select a clip to copy" });
+      return;
+    }
+    set({
+      clipboardClip: structuredClone(clip),
+      status: `Copied “${clip.name}”`,
+    });
+  },
+
+  pasteClipboard: () => {
+    const s = get();
+    const src = s.clipboardClip;
+    if (!src) {
+      set({ status: "Clipboard empty — copy a clip first (Ctrl+C)" });
+      return;
+    }
+    const track = s.tracks.find((t) => t.kind === src.trackKind);
+    if (!track) {
+      set({ status: "No matching track for paste" });
+      return;
+    }
+    if (track.locked) {
+      set({ status: "Track is locked" });
+      return;
+    }
+    get().pushHistory();
+    const copy: TimelineClip = {
+      ...structuredClone(src),
+      id: uid(isTextClip(src) ? "text" : "clip"),
+      start: s.playhead,
+      trackIndex: track.index,
+      trackKind: track.kind,
+    };
+    set((st) => ({
+      clips: [...st.clips, copy],
+      selectedClipId: copy.id,
+      dirty: true,
+      status: `Pasted “${copy.name}”`,
+    }));
+  },
+
+  pushHistory: () => {
+    const s = get();
+    const snap = cloneHistory(s);
+    set({
+      past: [...s.past.slice(-40), snap],
+      future: [],
+    });
+  },
+
+  undo: () => {
+    const s = get();
+    if (!s.past.length) {
+      set({ status: "Nothing to undo" });
+      return;
+    }
+    const prev = s.past[s.past.length - 1];
+    const current = cloneHistory(s);
+    set({
+      past: s.past.slice(0, -1),
+      future: [current, ...s.future].slice(0, 40),
+      clips: prev.clips,
+      tracks: prev.tracks,
+      selectedClipId: prev.selectedClipId,
+      dirty: true,
+      status: "Undo",
+    });
+  },
+
+  redo: () => {
+    const s = get();
+    if (!s.future.length) {
+      set({ status: "Nothing to redo" });
+      return;
+    }
+    const next = s.future[0];
+    const current = cloneHistory(s);
+    set({
+      future: s.future.slice(1),
+      past: [...s.past, current].slice(-40),
+      clips: next.clips,
+      tracks: next.tracks,
+      selectedClipId: next.selectedClipId,
+      dirty: true,
+      status: "Redo",
+    });
+  },
+
+  addTimeline: () => {
+    const s = get();
+    const id = uid("tl");
+    const n = s.timelineTabs.length + 1;
+    const bundles = {
+      ...s.timelineBundles,
+      [s.activeTimelineId]: {
+        clips: structuredClone(s.clips),
+        tracks: structuredClone(s.tracks),
+        playhead: s.playhead,
+        zoom: s.zoom,
+      },
+    };
+    set({
+      timelineBundles: bundles,
+      timelineTabs: [...s.timelineTabs, { id, name: `Timeline ${String(n).padStart(2, "0")}` }],
+      activeTimelineId: id,
+      clips: [],
+      tracks: structuredClone(defaultTracks),
+      selectedClipId: null,
+      playhead: 0,
+      past: [],
+      future: [],
+      dirty: true,
+      status: `Created Timeline ${String(n).padStart(2, "0")}`,
+    });
+  },
+
+  switchTimeline: (id) => {
+    const s = get();
+    if (id === s.activeTimelineId) return;
+    const bundles = {
+      ...s.timelineBundles,
+      [s.activeTimelineId]: {
+        clips: structuredClone(s.clips),
+        tracks: structuredClone(s.tracks),
+        playhead: s.playhead,
+        zoom: s.zoom,
+      },
+    };
+    const next = bundles[id] || {
+      clips: [],
+      tracks: structuredClone(defaultTracks),
+      playhead: 0,
+      zoom: s.zoom,
+    };
+    set({
+      timelineBundles: bundles,
+      activeTimelineId: id,
+      clips: structuredClone(next.clips),
+      tracks: structuredClone(next.tracks.length ? next.tracks : defaultTracks),
+      playhead: next.playhead,
+      zoom: next.zoom || s.zoom,
+      selectedClipId: null,
+      past: [],
+      future: [],
+      dirty: true,
+      status: `Switched to ${s.timelineTabs.find((t) => t.id === id)?.name || "timeline"}`,
+    });
+  },
+
+  applyCropMask: () => {
+    const id = get().selectedClipId;
+    if (!id) {
+      set({ status: "Select a clip to crop" });
+      return;
+    }
+    get().pushHistory();
+    get().updateSelectedEffects({
+      maskEnabled: true,
+      maskShape: "box",
+      cropX: 0.08,
+      cropY: 0.08,
+      cropW: 0.84,
+      cropH: 0.84,
+      maskFeather: 6,
+    });
+    set({ status: "Crop mask on — tweak in Mask tab" });
+  },
+
+  toggleRemoveBg: () => {
+    const id = get().selectedClipId;
+    if (!id) {
+      set({ status: "Select a video clip to remove background" });
+      return;
+    }
+    const clip = get().clips.find((c) => c.id === id);
+    if (!clip || clip.trackKind !== "video") {
+      set({ status: "Remove background works on video clips" });
+      return;
+    }
+    get().pushHistory();
+    const on = !clip.effects?.removeBg;
+    get().updateSelectedEffects({ removeBg: on });
+    set({ status: on ? "Remove background on" : "Remove background off" });
+  },
+
+  addQuickKeyframe: () => {
+    const s = get();
+    const clip = s.clips.find((c) => c.id === s.selectedClipId);
+    if (!clip) {
+      set({ status: "Select a clip to add a keyframe" });
+      return;
+    }
+    if (s.playhead < clip.start || s.playhead > clip.start + clip.duration) {
+      set({ status: "Move playhead onto the clip, then add a keyframe" });
+      return;
+    }
+    const t = Math.max(0, Math.min(clip.duration, s.playhead - clip.start));
+    get().pushHistory();
+    get().toggleKeyframe("scale", t, clip.effects.scale ?? 1);
+  },
   setLibraryTool: (t) => set({ libraryTool: t }),
   updateTrack: (index, patch) =>
     set((s) => ({
@@ -609,9 +864,31 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
     set((s) => ({
-      clips: s.clips.map((c) =>
-        c.id === id ? { ...c, effects: { ...c.effects, ...patch } } : c,
-      ),
+      clips: s.clips.map((c) => {
+        if (c.id !== id) return c;
+        let effects = { ...c.effects, ...patch };
+        // Keep active playhead keyframes in sync when dragging sliders
+        const localT = Math.max(0, s.playhead - c.start);
+        const keyed: KeyframeProp[] = [
+          "scale",
+          "opacity",
+          "posX",
+          "posY",
+          "rotation",
+        ];
+        for (const prop of keyed) {
+          if (patch[prop] === undefined) continue;
+          const key = keyframeListKey(prop);
+          const list = [...(effects[key] || [])];
+          if (!list.length) continue;
+          const idx = list.findIndex((k) => Math.abs(k.time - localT) <= 0.05);
+          if (idx >= 0) {
+            list[idx] = { time: list[idx].time, value: Number(patch[prop]) };
+            effects = { ...effects, [key]: list };
+          }
+        }
+        return { ...c, effects };
+      }),
       dirty: true,
     }));
   },
@@ -643,6 +920,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   removeSelectedClip: () => {
     const id = get().selectedClipId;
     if (!id) return;
+    get().pushHistory();
     get().removeClip(id);
   },
 
@@ -716,8 +994,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       start: clip.start + clip.duration,
       effects: {
         ...clip.effects,
-        scaleKeyframes: [...clip.effects.scaleKeyframes],
-        opacityKeyframes: [...clip.effects.opacityKeyframes],
+        scaleKeyframes: [...(clip.effects.scaleKeyframes || [])],
+        opacityKeyframes: [...(clip.effects.opacityKeyframes || [])],
+        posXKeyframes: [...(clip.effects.posXKeyframes || [])],
+        posYKeyframes: [...(clip.effects.posYKeyframes || [])],
+        rotationKeyframes: [...(clip.effects.rotationKeyframes || [])],
       },
       text: clip.text ? { ...clip.text } : undefined,
       isStill: clip.isStill,
@@ -900,13 +1181,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   addKeyframe: (prop, time, value) => {
     const id = get().selectedClipId;
     if (!id) return;
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
+    const key = keyframeListKey(prop);
     set((s) => ({
       clips: s.clips.map((c) => {
         if (c.id !== id) return c;
-        const key = prop === "scale" ? "scaleKeyframes" : "opacityKeyframes";
-        const existing = c.effects[key].filter(
-          (k) => Math.abs(k.time - time) > 0.001,
-        );
+        const list = c.effects[key] || [];
+        const existing = list.filter((k) => Math.abs(k.time - time) > 0.001);
         return {
           ...c,
           effects: {
@@ -915,7 +1199,48 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           },
         };
       }),
-      status: `Keyframe added for ${prop}`,
+      status: `Keyframe added · ${prop}`,
+      dirty: true,
+    }));
+  },
+
+  toggleKeyframe: (prop, time, value) => {
+    const id = get().selectedClipId;
+    if (!id) return;
+    if (get().isClipLocked(id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
+    const key = keyframeListKey(prop);
+    const clip = get().clips.find((c) => c.id === id);
+    if (!clip) return;
+    const list = [...(clip.effects[key] || [])];
+    const removing = list.some((k) => Math.abs(k.time - time) <= 0.05);
+    let next = list;
+    if (removing) {
+      next = list.filter((k) => Math.abs(k.time - time) > 0.05);
+    } else {
+      next = [...list, { time, value }];
+      if (list.length === 0 && time > 0.05) {
+        const base =
+          prop === "scale"
+            ? clip.effects.scale
+            : prop === "opacity"
+              ? clip.effects.opacity
+              : prop === "posX"
+                ? clip.effects.posX ?? 0
+                : prop === "posY"
+                  ? clip.effects.posY ?? 0
+                  : clip.effects.rotation;
+        next.push({ time: 0, value: base });
+      }
+      next.sort((a, b) => a.time - b.time);
+    }
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id === id ? { ...c, effects: { ...c.effects, [key]: next } } : c,
+      ),
+      status: removing ? `Removed ${prop} keyframe` : `Added ${prop} keyframe`,
       dirty: true,
     }));
   },
@@ -952,6 +1277,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       processingCount: 0,
       view: "editor",
       libraryTool: "media",
+      past: [],
+      future: [],
+      timelineTabs: [{ id: "tl_1", name: "Timeline 01" }],
+      activeTimelineId: "tl_1",
+      timelineBundles: {},
+      magnetEnabled: true,
     });
   },
 
@@ -981,10 +1312,27 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       processingCount: 0,
       view: "editor",
       libraryTool: "media",
+      past: [],
+      future: [],
+      timelineTabs: snap.timelineTabs?.length
+        ? snap.timelineTabs
+        : [{ id: "tl_1", name: "Timeline 01" }],
+      activeTimelineId: snap.activeTimelineId || "tl_1",
+      timelineBundles: snap.timelineBundles || {},
+      magnetEnabled: true,
     }),
 
   toSnapshot: () => {
     const s = get();
+    const bundles = {
+      ...s.timelineBundles,
+      [s.activeTimelineId]: {
+        clips: s.clips,
+        tracks: s.tracks,
+        playhead: s.playhead,
+        zoom: s.zoom,
+      },
+    };
     return {
       version: 1 as const,
       name: s.projectName,
@@ -1000,6 +1348,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       media: s.media,
       clips: s.clips,
       tracks: s.tracks,
+      timelineTabs: s.timelineTabs,
+      activeTimelineId: s.activeTimelineId,
+      timelineBundles: bundles,
     };
   },
 }));
