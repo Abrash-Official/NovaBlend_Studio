@@ -205,6 +205,7 @@ export function Timeline() {
   const trackRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const layerBoostRef = useRef<{ above?: number; below?: number }>({});
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [scrubbing, setScrubbing] = useState(false);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [freezing, setFreezing] = useState(false);
   const [dropTrackIndex, setDropTrackIndex] = useState<number | null>(null);
@@ -264,6 +265,30 @@ export function Timeline() {
     const x = clientX - rect.left + el.scrollLeft - TRACK_HEADER_W;
     return Math.max(0, Math.min(duration, x / zoom));
   }
+
+  function beginPlayheadScrub(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu(null);
+    setPlaying(false);
+    setScrubbing(true);
+    setPlayhead(timeFromClientX(e.clientX));
+  }
+
+  useEffect(() => {
+    if (!scrubbing) return;
+    const onMove = (e: MouseEvent) => {
+      setPlaying(false);
+      setPlayhead(timeFromClientX(e.clientX));
+    };
+    const onUp = () => setScrubbing(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [scrubbing, zoom, duration, setPlayhead, setPlaying]);
 
   useEffect(() => {
     if (!drag) return;
@@ -693,21 +718,20 @@ export function Timeline() {
       <div
         ref={scrollRef}
         className="relative min-h-0 flex-1 overflow-auto"
-        onMouseDown={(e) => {
-          if ((e.target as HTMLElement).dataset.ruler === "1") {
-            setPlaying(false);
-            setPlayhead(timeFromClientX(e.clientX));
-          }
-        }}
       >
         <div style={{ width: widthPx + TRACK_HEADER_W, minHeight: 24 + tracksBodyHeight }}>
           <div className="sticky top-0 z-20 flex h-6 border-b border-[var(--line)] bg-[var(--bg-2)]">
             <div className="shrink-0 border-r border-[var(--line)]" style={{ width: TRACK_HEADER_W }} />
-            <div className="relative flex-1" data-ruler="1" style={{ width: widthPx }}>
+            <div
+              className="relative flex-1 cursor-ew-resize"
+              data-ruler="1"
+              style={{ width: widthPx }}
+              onMouseDown={beginPlayheadScrub}
+            >
               {Array.from({ length: Math.ceil(duration) + 1 }).map((_, i) => (
                 <div
                   key={i}
-                  className="absolute top-0 h-full border-l border-[var(--line)] text-[10px] text-[var(--muted)]"
+                  className="pointer-events-none absolute top-0 h-full border-l border-[var(--line)] text-[10px] text-[var(--muted)]"
                   style={{ left: i * zoom }}
                 >
                   <span className="ml-1">{i}s</span>
@@ -1071,11 +1095,17 @@ export function Timeline() {
             </div>
           ))}
 
+          {/* CapCut-style draggable playhead */}
           <div
-            className="pointer-events-none absolute top-6 z-30 w-px bg-[var(--accent)]"
-            style={{ left: TRACK_HEADER_W + playhead * zoom, height: tracksBodyHeight }}
+            className="tl-playhead"
+            style={{
+              left: TRACK_HEADER_W + playhead * zoom,
+              height: 24 + tracksBodyHeight,
+            }}
+            onMouseDown={beginPlayheadScrub}
           >
-            <div className="absolute -left-1.5 top-0 h-3 w-3 rounded-sm bg-[var(--accent)]" />
+            <div className="tl-playhead-handle" title="Drag playhead" />
+            <div className="tl-playhead-line" />
           </div>
         </div>
       </div>

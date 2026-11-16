@@ -867,6 +867,43 @@ button {
   color: #efb4bb;
 }
 
+/* CapCut-style timeline playhead (draggable) */
+.tl-playhead {
+  position: absolute;
+  top: 0;
+  z-index: 40;
+  width: 12px;
+  margin-left: -6px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+.tl-playhead-handle {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 12px;
+  height: 14px;
+  margin-left: -6px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.tl-playhead-line {
+  position: absolute;
+  top: 14px;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.tl-playhead:hover .tl-playhead-handle,
+.tl-playhead:active .tl-playhead-handle {
+  filter: brightness(1.12);
+}
+
 /* CapCut-like bare transport icons — no background box */
 .transport-icon {
   display: inline-flex;
