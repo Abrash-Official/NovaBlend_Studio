@@ -14,6 +14,7 @@ import {
 import { useEditorStore } from "../store/editorStore";
 import { snapClipStart } from "../lib/snap";
 import { ClipWaveform } from "./ClipWaveform";
+import { ClipFilmstrip } from "./ClipFilmstrip";
 import {
   IconAdd,
   IconCopy,
@@ -35,6 +36,22 @@ import {
   IconUnlock,
   IconVolume,
 } from "./Icons";
+
+function formatClipTc(seconds: number, fps = 30) {
+  const s = Math.max(0, seconds);
+  const totalFrames = Math.round(s * fps);
+  const ff = totalFrames % fps;
+  const totalSec = Math.floor(totalFrames / fps);
+  const ss = totalSec % 60;
+  const mm = Math.floor(totalSec / 60) % 60;
+  const hh = Math.floor(totalSec / 3600);
+  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+  if (hh > 0) return `${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`;
+  return `${pad(mm)}:${pad(ss)}:${pad(ff)}`;
+}
+
+/** Extra space above each clip for CapCut-style name + duration meta. */
+const CLIP_META_H = 16;
 
 function clampMenuPos(x: number, y: number, w: number, h: number) {
   const pad = 10;
@@ -77,7 +94,7 @@ function clipHeightForKind(kind: TrackKind): number {
       return 44;
     case "video":
     default:
-      return 54;
+      return 64;
   }
 }
 
@@ -148,6 +165,8 @@ export function Timeline() {
     zoom,
     setZoom,
     moveClip,
+    insertTrackRelative,
+    pruneEmptyTracks,
     updateClip,
     timelineDuration,
     setPlaying,
@@ -184,6 +203,7 @@ export function Timeline() {
   const duration = timelineDuration();
   const scrollRef = useRef<HTMLDivElement>(null);
   const trackRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const layerBoostRef = useRef<{ above?: number; below?: number }>({});
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [freezing, setFreezing] = useState(false);
@@ -191,13 +211,13 @@ export function Timeline() {
 
   const widthPx = useMemo(() => Math.max(800, duration * zoom), [duration, zoom]);
 
-  /** Hide empty optional tracks; always keep V1 visible. */
+  /** CapCut-like stack: text/FX above video, audio below. Always show V/A for layering. */
   const trackLayouts = useMemo(() => {
-    const kindOrder = { video: 0, fx: 1, audio: 2, text: 3 } as const;
+    const kindOrder = { text: 0, fx: 1, video: 2, audio: 3 } as const;
     const visible = tracks
       .filter((track) => {
         const hasClips = clips.some((c) => c.trackIndex === track.index);
-        if (track.kind === "video") return true;
+        if (track.kind === "video" || track.kind === "audio") return true;
         return hasClips;
       })
       .sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.index - b.index);
@@ -207,16 +227,19 @@ export function Timeline() {
       const { lanes, laneCount } = assignLanes(trackClips);
       const lanesUsed = Math.max(1, laneCount);
       const clipH = clipHeightForKind(track.kind);
-      const laneH = clipH + LANE_GAP;
-      const height = LANE_PAD * 2 + lanesUsed * clipH + (lanesUsed - 1) * LANE_GAP;
+      const meta = track.kind === "text" ? 0 : CLIP_META_H;
+      const laneH = clipH + meta + LANE_GAP;
+      const height =
+        LANE_PAD * 2 + lanesUsed * (clipH + meta) + (lanesUsed - 1) * LANE_GAP;
       return {
         track,
         trackClips,
         lanes,
         laneCount: lanesUsed,
         clipH,
+        metaH: meta,
         laneH,
-        height: Math.max(LANE_PAD * 2 + clipH, height),
+        height: Math.max(LANE_PAD * 2 + clipH + meta, height),
       };
     });
   }, [tracks, clips]);
@@ -260,13 +283,75 @@ export function Timeline() {
       const minLen = 0.05;
 
       if (drag.mode === "move") {
+        const kind = clip.trackKind;
+        const sameKind = state.tracks
+          .filter((t) => t.kind === kind)
+          .sort((a, b) => a.index - b.index);
+        let dropIndex: number | undefined;
+
         const over = trackIndexAtClientY(e.clientY);
-        setDropTrackIndex(over);
-        const target =
-          over !== null
-            ? state.tracks.find((t) => t.index === over)
-            : undefined;
-        const canDrop = target && target.kind === clip.trackKind;
+        if (over !== null) {
+          const target = state.tracks.find((t) => t.index === over);
+          if (target?.kind === kind && !target.locked) {
+            dropIndex = target.index;
+            // Near top/bottom edge of the row → CapCut-style new layer
+            const row = trackRowRefs.current.get(over);
+            if (row && sameKind.length) {
+              const r = row.getBoundingClientRect();
+              const edge = 14;
+              if (e.clientY < r.top + edge && over === sameKind[0].index) {
+                if (layerBoostRef.current.above == null) {
+                  layerBoostRef.current.above = insertTrackRelative(
+                    kind,
+                    over,
+                    "above",
+                  );
+                }
+                dropIndex = layerBoostRef.current.above;
+              } else if (
+                e.clientY > r.bottom - edge &&
+                over === sameKind[sameKind.length - 1].index
+              ) {
+                if (layerBoostRef.current.below == null) {
+                  layerBoostRef.current.below = insertTrackRelative(
+                    kind,
+                    over,
+                    "below",
+                  );
+                }
+                dropIndex = layerBoostRef.current.below;
+              }
+            }
+          }
+        } else if (sameKind.length) {
+          const firstEl = trackRowRefs.current.get(sameKind[0].index);
+          const lastEl = trackRowRefs.current.get(
+            sameKind[sameKind.length - 1].index,
+          );
+          const firstR = firstEl?.getBoundingClientRect();
+          const lastR = lastEl?.getBoundingClientRect();
+          if (firstR && e.clientY < firstR.top) {
+            if (layerBoostRef.current.above == null) {
+              layerBoostRef.current.above = insertTrackRelative(
+                kind,
+                sameKind[0].index,
+                "above",
+              );
+            }
+            dropIndex = layerBoostRef.current.above;
+          } else if (lastR && e.clientY > lastR.bottom) {
+            if (layerBoostRef.current.below == null) {
+              layerBoostRef.current.below = insertTrackRelative(
+                kind,
+                sameKind[sameKind.length - 1].index,
+                "below",
+              );
+            }
+            dropIndex = layerBoostRef.current.below;
+          }
+        }
+
+        setDropTrackIndex(dropIndex ?? over);
         let nextStart = Math.max(0, drag.originStart + dTime);
         if (state.magnetEnabled) {
           const threshold = Math.max(0.05, 10 / zoom);
@@ -279,11 +364,7 @@ export function Timeline() {
             threshold,
           });
         }
-        moveClip(
-          drag.id,
-          nextStart,
-          canDrop ? target.index : undefined,
-        );
+        moveClip(drag.id, nextStart, dropIndex);
         return;
       }
 
@@ -317,6 +398,8 @@ export function Timeline() {
     const onUp = () => {
       setDrag(null);
       setDropTrackIndex(null);
+      layerBoostRef.current = {};
+      pruneEmptyTracks();
     };
 
     window.addEventListener("mousemove", onMove);
@@ -325,7 +408,12 @@ export function Timeline() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [drag, zoom, moveClip, updateClip]);
+  }, [drag, zoom, moveClip, insertTrackRelative, pruneEmptyTracks, updateClip]);
+
+  // Clean leftover empty layers from earlier sessions
+  useEffect(() => {
+    pruneEmptyTracks();
+  }, [pruneEmptyTracks]);
 
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -378,6 +466,7 @@ export function Timeline() {
     setPlaying(false);
     selectClip(clipId);
     pushHistory();
+    layerBoostRef.current = {};
     setDrag({
       mode,
       id: clipId,
@@ -627,7 +716,7 @@ export function Timeline() {
             </div>
           </div>
 
-          {trackLayouts.map(({ track, trackClips, lanes, laneCount, height, clipH, laneH }) => (
+          {trackLayouts.map(({ track, trackClips, lanes, laneCount, height, clipH, metaH, laneH }) => (
             <div
               key={track.id}
               ref={(el) => {
@@ -648,13 +737,7 @@ export function Timeline() {
               <div className="track-header flex w-[100px] shrink-0 flex-col justify-center gap-1 overflow-hidden border-r border-[var(--line)] bg-[var(--bg-2)] px-1.5 text-xs text-[var(--muted)]">
                 <div className="flex items-center gap-1">
                   <div className="min-w-0 flex-1 truncate font-medium text-[var(--text)]">
-                    {track.kind === "video"
-                      ? "V1"
-                      : track.kind === "fx"
-                        ? "F1"
-                        : track.kind === "audio"
-                          ? "A1"
-                          : "T1"}
+                    {track.name}
                   </div>
                   {laneCount > 1 && (
                     <span className="shrink-0 text-[9px] text-[var(--warn)]">{laneCount}</span>
@@ -734,6 +817,14 @@ export function Timeline() {
                     mediaItem?.previewPath ||
                     mediaItem?.path ||
                     "";
+                  const filmPath =
+                    clip.trackKind === "video" && !isStillClip(clip)
+                      ? clip.previewPath ||
+                        clip.mediaPath ||
+                        mediaItem?.previewPath ||
+                        mediaItem?.path ||
+                        ""
+                      : "";
                   const mediaDur = Math.max(
                     0.05,
                     mediaItem?.duration || clip.outPoint || clip.duration,
@@ -743,9 +834,14 @@ export function Timeline() {
                     !!clip.hasAudio &&
                     (clip.trackKind === "audio" ||
                       (clip.trackKind === "video" && !isStillClip(clip)));
-                  const thumb = mediaItem?.thumbPath;
+                  const thumb = mediaItem?.thumbPath
+                    ? convertFileSrc(mediaItem.thumbPath)
+                    : undefined;
                   const kfTimes = collectKeyframeTimes(clip);
                   const innerW = Math.max(0, width - handleW * 2);
+                  const filmH = showWave
+                    ? Math.max(22, Math.floor(clipH * 0.62))
+                    : clipH;
                   const fadeInSec =
                     clip.trackKind === "audio" || clip.hasAudio
                       ? clip.effects.audioFadeIn || 0
@@ -766,174 +862,207 @@ export function Timeline() {
                   return (
                     <div
                       key={clip.id}
-                      className={`absolute overflow-hidden select-none text-white tl-clip tl-clip-${clip.trackKind}`}
+                      className="absolute select-none"
                       style={{
                         left,
                         width,
                         top,
-                        height: clipH,
-                        borderRadius: clip.trackKind === "text" ? 3 : 5,
-                        background: laneTint(color, lane),
-                        filter: `brightness(${brightness})`,
-                        boxShadow: selected
-                          ? "inset 0 0 0 1px rgba(255,255,255,0.75)"
-                          : "inset 0 0 0 1px rgba(255,255,255,0.12)",
-                        opacity: track.hidden ? 0.35 : track.muted ? 0.7 : 0.96,
+                        height: clipH + metaH,
                         zIndex: selected || drag?.id === clip.id ? 8 : 1 + lane,
-                        cursor: track.locked ? "not-allowed" : undefined,
-                      }}
-                      title={`${clip.name} · ${clip.duration.toFixed(1)}s${track.locked ? " · locked" : " · right-click for tools"}`}
-                      onClick={() => selectClip(clip.id)}
-                      onContextMenu={(e) => {
-                        if (track.locked) {
-                          e.preventDefault();
-                          setStatus("Track is locked");
-                          selectClip(clip.id);
-                          return;
-                        }
-                        openClipMenu(e, clip.id);
+                        opacity: track.hidden ? 0.35 : track.muted ? 0.7 : 1,
                       }}
                     >
+                      {metaH > 0 && (
+                        <div className="tl-clip-meta" title={clip.name}>
+                          <span className="tl-clip-meta-name">{clip.name}</span>
+                          <span className="tl-clip-meta-dur">
+                            {formatClipTc(clip.duration, fps)}
+                          </span>
+                        </div>
+                      )}
                       <div
-                        className="clip-trim clip-trim-left"
-                        onMouseDown={(e) => beginDrag(e, clip.id, "trim-in", clip)}
-                        onContextMenu={(e) => openClipMenu(e, clip.id)}
-                        title="Trim start"
-                      />
-
-                      <div
-                        className="absolute bottom-0 top-0 cursor-grab overflow-hidden active:cursor-grabbing"
-                        style={{ left: handleW, right: handleW }}
-                        onMouseDown={(e) => beginDrag(e, clip.id, "move", clip)}
-                        onContextMenu={(e) => openClipMenu(e, clip.id)}
+                        className={`absolute overflow-hidden text-white tl-clip tl-clip-${clip.trackKind}`}
+                        style={{
+                          left: 0,
+                          right: 0,
+                          top: metaH,
+                          height: clipH,
+                          borderRadius: clip.trackKind === "text" ? 3 : 5,
+                          background: laneTint(color, lane),
+                          filter: `brightness(${brightness})`,
+                          boxShadow: selected
+                            ? "inset 0 0 0 1.5px rgba(255,255,255,0.85)"
+                            : "inset 0 0 0 1px rgba(255,255,255,0.12)",
+                          cursor: track.locked ? "not-allowed" : undefined,
+                        }}
+                        title={`${clip.name} · ${formatClipTc(clip.duration, fps)}${track.locked ? " · locked" : " · drag up/down to change layer"}`}
+                        onClick={() => selectClip(clip.id)}
+                        onContextMenu={(e) => {
+                          if (track.locked) {
+                            e.preventDefault();
+                            setStatus("Track is locked");
+                            selectClip(clip.id);
+                            return;
+                          }
+                          openClipMenu(e, clip.id);
+                        }}
                       >
-                        {clip.trackKind === "video" && thumb && (
-                          <div
-                            className="tl-filmstrip"
-                            style={{
-                              backgroundImage: `url(${convertFileSrc(thumb)})`,
-                            }}
-                          />
-                        )}
-
-                        {showWave && clip.trackKind === "video" && (
-                          <div className="tl-wave-overlay">
-                            <ClipWaveform
-                              path={wavePath}
-                              width={innerW}
-                              height={Math.max(14, Math.floor(clipH * 0.42))}
-                              mode="overlay"
-                              color="rgba(255,255,255,0.88)"
-                              inPoint={clip.inPoint}
-                              outPoint={clip.outPoint}
-                              mediaDuration={mediaDur}
-                              amplitude={clip.effects.volume ?? 1}
-                            />
-                          </div>
-                        )}
-
-                        {showWave && clip.trackKind === "audio" && (
-                          <div className="tl-wave-fill">
-                            <ClipWaveform
-                              path={wavePath}
-                              width={innerW}
-                              height={clipH}
-                              mode="fill"
-                              color="rgba(210, 230, 255, 0.95)"
-                              inPoint={clip.inPoint}
-                              outPoint={clip.outPoint}
-                              mediaDuration={mediaDur}
-                              amplitude={clip.effects.volume ?? 1}
-                            />
-                          </div>
-                        )}
-
-                        {fadeInPx > 2 && (
-                          <div
-                            className="tl-fade"
-                            style={{ width: fadeInPx }}
-                            title={`Fade in ${fadeInSec.toFixed(2)}s`}
-                          >
-                            <svg
-                              className="tl-fade-svg"
-                              viewBox="0 0 100 100"
-                              preserveAspectRatio="none"
-                              aria-hidden
-                            >
-                              {/* CapCut-like ease curve: quiet → full */}
-                              <path
-                                d="M0 100 C 25 100, 55 55, 100 0 L 0 0 Z"
-                                fill="rgba(0,0,0,0.58)"
-                              />
-                              <path
-                                d="M0 100 C 25 100, 55 55, 100 0"
-                                fill="none"
-                                stroke="rgba(255,255,255,0.45)"
-                                strokeWidth="1.5"
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            </svg>
-                          </div>
-                        )}
-                        {fadeOutPx > 2 && (
-                          <div
-                            className="tl-fade tl-fade-end"
-                            style={{ width: fadeOutPx }}
-                            title={`Fade out ${fadeOutSec.toFixed(2)}s`}
-                          >
-                            <svg
-                              className="tl-fade-svg"
-                              viewBox="0 0 100 100"
-                              preserveAspectRatio="none"
-                              aria-hidden
-                            >
-                              <path
-                                d="M100 100 C 75 100, 45 55, 0 0 L 100 0 Z"
-                                fill="rgba(0,0,0,0.58)"
-                              />
-                              <path
-                                d="M100 100 C 75 100, 45 55, 0 0"
-                                fill="none"
-                                stroke="rgba(255,255,255,0.45)"
-                                strokeWidth="1.5"
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            </svg>
-                          </div>
-                        )}
+                        <div
+                          className="clip-trim clip-trim-left"
+                          onMouseDown={(e) =>
+                            beginDrag(e, clip.id, "trim-in", clip)
+                          }
+                          onContextMenu={(e) => openClipMenu(e, clip.id)}
+                          title="Trim start"
+                        />
 
                         <div
-                          className={`tl-clip-label ${clip.trackKind === "text" ? "thin" : ""}`}
+                          className="absolute bottom-0 top-0 cursor-grab overflow-hidden active:cursor-grabbing"
+                          style={{ left: handleW, right: handleW }}
+                          onMouseDown={(e) =>
+                            beginDrag(e, clip.id, "move", clip)
+                          }
+                          onContextMenu={(e) => openClipMenu(e, clip.id)}
                         >
-                          <div className="truncate font-medium leading-none">
-                            {clip.name}
-                          </div>
-                          {clip.trackKind !== "text" && clipH >= 36 && (
-                            <div className="truncate text-[10px] leading-none opacity-80">
-                              {clip.duration.toFixed(1)}s
+                          {clip.trackKind === "video" && filmPath && (
+                            <ClipFilmstrip
+                              path={filmPath}
+                              width={innerW}
+                              height={filmH}
+                              inPoint={clip.inPoint}
+                              outPoint={clip.outPoint}
+                              fallbackThumb={thumb}
+                            />
+                          )}
+
+                          {clip.trackKind === "video" &&
+                            !filmPath &&
+                            thumb && (
+                              <div
+                                className="tl-filmstrip-fallback"
+                                style={{ backgroundImage: `url(${thumb})` }}
+                              />
+                            )}
+
+                          {showWave && clip.trackKind === "video" && (
+                            <div className="tl-wave-overlay">
+                              <ClipWaveform
+                                path={wavePath}
+                                width={innerW}
+                                height={Math.max(
+                                  14,
+                                  Math.floor(clipH * 0.38),
+                                )}
+                                mode="overlay"
+                                color="rgba(255,255,255,0.88)"
+                                inPoint={clip.inPoint}
+                                outPoint={clip.outPoint}
+                                mediaDuration={mediaDur}
+                                amplitude={clip.effects.volume ?? 1}
+                              />
                             </div>
                           )}
+
+                          {showWave && clip.trackKind === "audio" && (
+                            <div className="tl-wave-fill">
+                              <ClipWaveform
+                                path={wavePath}
+                                width={innerW}
+                                height={clipH}
+                                mode="fill"
+                                color="rgba(210, 230, 255, 0.95)"
+                                inPoint={clip.inPoint}
+                                outPoint={clip.outPoint}
+                                mediaDuration={mediaDur}
+                                amplitude={clip.effects.volume ?? 1}
+                              />
+                            </div>
+                          )}
+
+                          {fadeInPx > 2 && (
+                            <div
+                              className="tl-fade"
+                              style={{ width: fadeInPx }}
+                              title={`Fade in ${fadeInSec.toFixed(2)}s`}
+                            >
+                              <svg
+                                className="tl-fade-svg"
+                                viewBox="0 0 100 100"
+                                preserveAspectRatio="none"
+                                aria-hidden
+                              >
+                                <path
+                                  d="M0 100 C 25 100, 55 55, 100 0 L 0 0 Z"
+                                  fill="rgba(0,0,0,0.58)"
+                                />
+                                <path
+                                  d="M0 100 C 25 100, 55 55, 100 0"
+                                  fill="none"
+                                  stroke="rgba(255,255,255,0.45)"
+                                  strokeWidth="1.5"
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              </svg>
+                            </div>
+                          )}
+                          {fadeOutPx > 2 && (
+                            <div
+                              className="tl-fade tl-fade-end"
+                              style={{ width: fadeOutPx }}
+                              title={`Fade out ${fadeOutSec.toFixed(2)}s`}
+                            >
+                              <svg
+                                className="tl-fade-svg"
+                                viewBox="0 0 100 100"
+                                preserveAspectRatio="none"
+                                aria-hidden
+                              >
+                                <path
+                                  d="M100 100 C 75 100, 45 55, 0 0 L 100 0 Z"
+                                  fill="rgba(0,0,0,0.58)"
+                                />
+                                <path
+                                  d="M100 100 C 75 100, 45 55, 0 0"
+                                  fill="none"
+                                  stroke="rgba(255,255,255,0.45)"
+                                  strokeWidth="1.5"
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              </svg>
+                            </div>
+                          )}
+
+                          {clip.trackKind === "text" && (
+                            <div className="tl-clip-label thin">
+                              <div className="truncate font-medium leading-none">
+                                {clip.name}
+                              </div>
+                            </div>
+                          )}
+
+                          {kfTimes.map((t) => {
+                            const x =
+                              (t / Math.max(0.05, clip.duration)) * innerW;
+                            if (x < 2 || x > innerW - 2) return null;
+                            return (
+                              <span
+                                key={`kf-${t}`}
+                                className="tl-kf-mark"
+                                style={{ left: x }}
+                                title={`Keyframe @ ${t.toFixed(2)}s`}
+                              />
+                            );
+                          })}
                         </div>
 
-                        {kfTimes.map((t) => {
-                          const x = (t / Math.max(0.05, clip.duration)) * innerW;
-                          if (x < 2 || x > innerW - 2) return null;
-                          return (
-                            <span
-                              key={`kf-${t}`}
-                              className="tl-kf-mark"
-                              style={{ left: x }}
-                              title={`Keyframe @ ${t.toFixed(2)}s`}
-                            />
-                          );
-                        })}
+                        <div
+                          className="clip-trim clip-trim-right"
+                          onMouseDown={(e) =>
+                            beginDrag(e, clip.id, "trim-out", clip)
+                          }
+                          title="Trim end"
+                        />
                       </div>
-
-                      <div
-                        className="clip-trim clip-trim-right"
-                        onMouseDown={(e) => beginDrag(e, clip.id, "trim-out", clip)}
-                        title="Trim end"
-                      />
                     </div>
                   );
                 })}

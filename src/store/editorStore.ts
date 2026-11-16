@@ -41,22 +41,52 @@ const defaultTracks: Track[] = [
 
 const LAYOUT_DEFAULTS = { leftWidth: 300, rightWidth: 280, timelineHeight: 280 };
 
+function kindLabel(kind: Track["kind"], n: number) {
+  if (kind === "video") return `V${n}`;
+  if (kind === "audio") return `A${n}`;
+  if (kind === "text") return `T${n}`;
+  return `F${n}`;
+}
+
 function normalizeTracks(tracks?: Track[]): Track[] {
   if (!tracks?.length) return defaultTracks.map((t) => ({ ...t }));
-  return defaultTracks.map((def) => {
-    const found = tracks.find((t) => t.id === def.id || t.kind === def.kind);
+
+  const sorted = [...tracks]
+    .filter((t) => t && typeof t.index === "number")
+    .sort((a, b) => a.index - b.index);
+
+  const counts: Record<string, number> = {};
+  const normalized: Track[] = sorted.map((t, i) => {
+    const kind = t.kind || "video";
+    counts[kind] = (counts[kind] || 0) + 1;
     return {
-      ...def,
-      ...(found || {}),
-      id: def.id,
-      kind: def.kind,
-      name: def.name,
-      index: def.index,
-      muted: found?.muted ?? false,
-      hidden: found?.hidden ?? false,
-      locked: found?.locked ?? false,
+      id: t.id || `${kind}_${i}`,
+      kind,
+      name: t.name || kindLabel(kind, counts[kind]),
+      index: i,
+      muted: !!t.muted,
+      hidden: !!t.hidden,
+      locked: !!t.locked,
     };
   });
+
+  for (const def of defaultTracks) {
+    if (!normalized.some((t) => t.kind === def.kind)) {
+      normalized.push({
+        ...def,
+        id: `${def.kind}_${normalized.length}`,
+        index: normalized.length,
+        name: kindLabel(def.kind, 1),
+      });
+    }
+  }
+
+  return normalized
+    .sort((a, b) => {
+      const order = { video: 0, fx: 1, text: 2, audio: 3 } as const;
+      return order[a.kind] - order[b.kind] || a.index - b.index;
+    })
+    .map((t, i) => ({ ...t, index: i }));
 }
 
 function normalizeEffects(fx?: Partial<ClipEffects>): ClipEffects {
@@ -73,54 +103,162 @@ function trackLockedForClip(
   return !!tracks.find((t) => t.index === clip.trackIndex)?.locked;
 }
 
+const MEDIA_EXT_RE = /\.(mp4|mov|mkv|webm|avi|mp3|wav|aac|m4a|flac|ogg)$/i;
+const VIDEO_EXT_RE = /\.(mp4|mov|mkv|webm|avi)$/i;
+const AUDIO_EXT_RE = /\.(mp3|wav|aac|m4a|flac|ogg)$/i;
+
+/** True media-backed clip (not a pure text/FX overlay). */
+function looksLikeMediaClip(c: TimelineClip): boolean {
+  if (!c.mediaId) return false;
+  const path = c.mediaPath || c.previewPath || c.name || '';
+  return MEDIA_EXT_RE.test(path) || (!!c.mediaPath && c.mediaPath.length > 0);
+}
+
+function inferMediaTrackKind(c: TimelineClip): 'video' | 'audio' {
+  const path = c.mediaPath || c.previewPath || c.name || '';
+  if (AUDIO_EXT_RE.test(path) && !VIDEO_EXT_RE.test(path)) return 'audio';
+  if (c.hasAudio && !VIDEO_EXT_RE.test(path) && /audio/i.test(c.name || '')) {
+    return 'audio';
+  }
+  return 'video';
+}
+
+/** Pure text overlay: no media file attached. */
+function isPureTextClip(c: TimelineClip): boolean {
+  if (c.trackKind === 'fx') return false;
+  if (looksLikeMediaClip(c)) return false;
+  return c.trackKind === 'text' || !!c.text;
+}
+
 function normalizeClip(c: TimelineClip): TimelineClip {
   const effects = normalizeEffects(c.effects);
-  if (isFxClip(c) || c.trackKind === "fx") {
+
+  // Media clips wrongly tagged as text must become video/audio again
+  if (looksLikeMediaClip(c) && c.trackKind !== 'fx' && (c.trackKind === 'text' || !!c.text)) {
+    const kind = inferMediaTrackKind(c);
     return {
       ...c,
       effects,
-      trackKind: "fx",
-      hasAudio: false,
-      mediaId: c.mediaId || "",
-      mediaPath: c.mediaPath || "",
-      previewPath: c.previewPath || "",
+      trackKind: kind,
+      text: undefined,
+      hasAudio: c.hasAudio ?? kind === 'audio',
     };
   }
-  if (!isTextClip(c) && c.trackKind !== "text") {
-    return { ...c, effects };
+
+  if (isFxClip(c) || c.trackKind === 'fx') {
+    return {
+      ...c,
+      effects,
+      trackKind: 'fx',
+      hasAudio: false,
+      mediaId: c.mediaId || '',
+      mediaPath: c.mediaPath || '',
+      previewPath: c.previewPath || '',
+    };
   }
-  return {
-    ...c,
-    effects,
-    trackKind: "text",
-    hasAudio: false,
-    mediaId: c.mediaId || "",
-    mediaPath: c.mediaPath || "",
-    previewPath: c.previewPath || "",
-    text: { ...DEFAULT_TEXT(), ...(c.text || {}) },
-  };
+
+  if (isPureTextClip(c)) {
+    return {
+      ...c,
+      effects,
+      trackKind: 'text',
+      hasAudio: false,
+      mediaId: '',
+      mediaPath: '',
+      previewPath: '',
+      text: { ...DEFAULT_TEXT(), ...(c.text || {}) },
+    };
+  }
+
+  return { ...c, effects, text: undefined };
 }
 
-/** Remap clips from older layouts onto V1 / F1 / T1 / A1. */
-function migrateClipTracks(clips: TimelineClip[]): TimelineClip[] {
-  const videoIdx = defaultTracks.find((t) => t.kind === "video")!.index;
-  const fxIdx = defaultTracks.find((t) => t.kind === "fx")!.index;
-  const textIdx = defaultTracks.find((t) => t.kind === "text")!.index;
-  const audioIdx = defaultTracks.find((t) => t.kind === "audio")!.index;
+/** Keep clip track indices when valid AND kind matches; never overwrite kind from a mismatched track. */
+function migrateClipTracks(
+  clips: TimelineClip[],
+  tracks: Track[],
+): TimelineClip[] {
+  const byKind = (kind: Track['kind']) =>
+    tracks.find((t) => t.kind === kind)?.index ?? 0;
 
   return clips.map((c) => {
     const base = normalizeClip(c);
-    if (isFxClip(base) || base.trackKind === "fx") {
-      return { ...base, trackIndex: fxIdx, trackKind: "fx" as const };
+    const track = tracks.find((t) => t.index === base.trackIndex);
+    if (track && track.kind === base.trackKind) {
+      return { ...base, trackIndex: track.index, trackKind: base.trackKind };
     }
-    if (isTextClip(base) || base.trackKind === "text") {
-      return { ...base, trackIndex: textIdx, trackKind: "text" as const };
+    if (base.trackKind === 'fx') {
+      return { ...base, trackIndex: byKind('fx'), trackKind: 'fx' as const };
     }
-    if (base.trackKind === "audio") {
-      return { ...base, trackIndex: audioIdx, trackKind: "audio" as const };
+    if (base.trackKind === 'text') {
+      return { ...base, trackIndex: byKind('text'), trackKind: 'text' as const };
     }
-    return { ...base, trackIndex: videoIdx, trackKind: "video" as const };
+    if (base.trackKind === 'audio') {
+      return {
+        ...base,
+        trackIndex: byKind('audio'),
+        trackKind: 'audio' as const,
+      };
+    }
+    return {
+      ...base,
+      trackIndex: byKind('video'),
+      trackKind: 'video' as const,
+    };
   });
+}
+
+/** Remove empty extra V/A/T/F layers; keep ≥1 of each kind. Remap clip indices by track id. */
+function pruneEmptyLayerTracks(
+  tracks: Track[],
+  clips: TimelineClip[],
+): { tracks: Track[]; clips: TimelineClip[] } {
+  const ordered = [...tracks].sort((a, b) => a.index - b.index);
+  const byKind: Partial<Record<Track["kind"], Track[]>> = {};
+  for (const t of ordered) {
+    (byKind[t.kind] ||= []).push(t);
+  }
+
+  const kept: Track[] = [];
+  for (const kind of ["video", "fx", "text", "audio"] as const) {
+    const list = byKind[kind] || [];
+    const withClips = list.filter((t) =>
+      clips.some((c) => c.trackIndex === t.index),
+    );
+    if (withClips.length) {
+      kept.push(...withClips);
+    } else if (list.length) {
+      kept.push(list[0]);
+    } else {
+      const def = defaultTracks.find((d) => d.kind === kind);
+      if (def) kept.push({ ...def, id: uid(kind) });
+    }
+  }
+
+  // Preserve relative order among remaining tracks (by previous index)
+  kept.sort((a, b) => a.index - b.index);
+
+  const indexMap = new Map<number, number>();
+  const nextTracks = kept.map((t, i) => {
+    indexMap.set(t.index, i);
+    return { ...t, index: i };
+  });
+
+  // Renumber labels per kind
+  const counts: Record<string, number> = {};
+  const renamed = nextTracks.map((t) => {
+    counts[t.kind] = (counts[t.kind] || 0) + 1;
+    return { ...t, name: kindLabel(t.kind, counts[t.kind]) };
+  });
+
+  const nextClips = clips.map((c) => ({
+    ...c,
+    trackIndex: indexMap.has(c.trackIndex)
+      ? (indexMap.get(c.trackIndex) as number)
+      : c.trackIndex,
+  }));
+
+  return { tracks: renamed, clips: nextClips };
 }
 
 export type AppView = "home" | "editor";
@@ -216,6 +354,14 @@ interface EditorState {
     timelineDelta: number,
   ) => void;
   moveClip: (id: string, newStart: number, newTrack?: number) => void;
+  /** CapCut-like: insert a same-kind track above/below an existing one. Returns new track index. */
+  insertTrackRelative: (
+    kind: Track["kind"],
+    relativeIndex: number,
+    place: "above" | "below",
+  ) => number;
+  /** Drop empty extra layers after up/down drag (keep ≥1 of each kind). */
+  pruneEmptyTracks: () => void;
   addKeyframe: (prop: KeyframeProp, time: number, value: number) => void;
   toggleKeyframe: (prop: KeyframeProp, time: number, value: number) => void;
   timelineDuration: () => number;
@@ -1157,25 +1303,97 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           return { ...c, start: Math.max(0, newStart) };
         }
 
-        if (isTextClip(c)) {
-          const textTrack = s.tracks.find((t) => t.kind === "text");
-          return {
-            ...c,
-            start: Math.max(0, newStart),
-            trackIndex: textTrack?.index ?? c.trackIndex,
-            trackKind: "text" as const,
-          };
-        }
-
+        // Never change clip kind on move — only same-kind drops reach here
         return {
           ...c,
           start: Math.max(0, newStart),
           trackIndex: track?.index ?? c.trackIndex,
-          trackKind: track?.kind ?? c.trackKind,
+          trackKind: c.trackKind,
         };
       }),
       dirty: true,
     }));
+  },
+
+  insertTrackRelative: (kind, relativeIndex, place) => {
+    const s = get();
+    const relative = s.tracks.find((t) => t.index === relativeIndex);
+    const sameKind = s.tracks
+      .filter((t) => t.kind === kind)
+      .sort((a, b) => a.index - b.index);
+    const anchor = relative?.kind === kind ? relative : sameKind[0];
+    if (!anchor) return relativeIndex;
+
+    const insertAt =
+      place === "above"
+        ? Math.max(0, anchor.index)
+        : Math.min(s.tracks.length, anchor.index + 1);
+
+    const n = sameKind.length + 1;
+    const newTrack: Track = {
+      id: uid(kind),
+      kind,
+      name: kindLabel(kind, n),
+      index: insertAt,
+      muted: false,
+      hidden: false,
+      locked: false,
+    };
+
+    const nextTracks = [
+      ...s.tracks.slice(0, insertAt).map((t) => ({ ...t })),
+      newTrack,
+      ...s.tracks.slice(insertAt).map((t) => ({ ...t, index: t.index + 1 })),
+    ].map((t, i) => ({ ...t, index: i }));
+
+    // Remap clip track indices after the insertion point
+    const nextClips = s.clips.map((c) => {
+      if (c.trackIndex >= insertAt) {
+        return { ...c, trackIndex: c.trackIndex + 1 };
+      }
+      return c;
+    });
+
+    // Renumber names for this kind
+    let k = 0;
+    const renamed = nextTracks.map((t) => {
+      if (t.kind !== kind) return t;
+      k += 1;
+      return { ...t, name: kindLabel(kind, k) };
+    });
+
+    set({
+      tracks: renamed,
+      clips: nextClips,
+      dirty: true,
+    });
+    return insertAt;
+  },
+
+  pruneEmptyTracks: () => {
+    const s = get();
+    // Also repair clips whose kind was remapped onto the wrong track
+    const repaired = migrateClipTracks(s.clips, s.tracks);
+    const pruned = pruneEmptyLayerTracks(s.tracks, repaired);
+    const tracksSame =
+      pruned.tracks.length === s.tracks.length &&
+      pruned.tracks.every(
+        (t, i) => t.id === s.tracks[i]?.id && t.index === s.tracks[i]?.index,
+      );
+    const clipsSame =
+      pruned.clips.length === s.clips.length &&
+      pruned.clips.every(
+        (c, i) =>
+          c.id === s.clips[i]?.id &&
+          c.trackIndex === s.clips[i]?.trackIndex &&
+          c.trackKind === s.clips[i]?.trackKind,
+      );
+    if (tracksSame && clipsSame) return;
+    set({
+      tracks: pruned.tracks,
+      clips: pruned.clips,
+      dirty: true,
+    });
   },
 
   addKeyframe: (prop, time, value) => {
@@ -1297,8 +1515,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         statusMessage: m.statusMessage || "Ready",
         previewPath: m.previewPath || m.path,
       })),
-      tracks: normalizeTracks(snap.tracks),
-      clips: migrateClipTracks(snap.clips),
+      ...(() => {
+        const tracks = normalizeTracks(snap.tracks);
+        const clips = migrateClipTracks(snap.clips, tracks);
+        const pruned = pruneEmptyLayerTracks(tracks, clips);
+        return { tracks: pruned.tracks, clips: pruned.clips };
+      })(),
       selectedClipId: null,
       playhead: snap.playhead || 0,
       isPlaying: false,

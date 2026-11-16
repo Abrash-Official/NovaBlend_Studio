@@ -140,7 +140,8 @@ export function Toolbar() {
   }
 
   return (
-    <header className="titlebar flex items-center gap-1.5 border-b border-[var(--line)] bg-[var(--bg-1)] px-2">
+    <header className="titlebar relative flex items-center gap-1.5 border-b border-[var(--line)] bg-[var(--bg-1)] px-2">
+      {/* Left cluster — CapCut: logo · menu · projects · autosave */}
       <div className="titlebar-brand" data-tauri-drag-region>
         <img src="/icon.svg" alt="" className="titlebar-logo-img" draggable={false} />
         <span className="titlebar-name" data-tauri-drag-region>
@@ -148,7 +149,7 @@ export function Toolbar() {
         </span>
       </div>
 
-      <div className="relative mr-1" ref={menuRef}>
+      <div className="relative" ref={menuRef}>
         <button
           type="button"
           className={`btn ${menuOpen ? "btn-accent" : ""}`}
@@ -239,15 +240,50 @@ export function Toolbar() {
         ← Projects
       </button>
 
-      <div className="mx-1 h-4 w-px bg-[var(--line)]" />
-
-      <div className="min-w-0 max-w-[160px] truncate text-[12px] font-medium" title={projectName}>
-        {projectName}
-        {dirty ? "*" : ""}
+      <div
+        className={`autosave-pill ${dirty ? "pending" : "ok"}`}
+        title={
+          lastAutoSavedAt
+            ? `Last auto-save ${new Date(lastAutoSavedAt).toLocaleTimeString()}`
+            : "Auto-save runs while you edit"
+        }
+      >
+        <span className="autosave-dot" />
+        {autoLabel}
       </div>
 
-      <div className="mx-1 h-4 w-px bg-[var(--line)]" />
+      {processingMedia && (
+        <div className="ml-1 flex max-w-[180px] items-center gap-2">
+          <div className="progress-track flex-1">
+            <div
+              className="progress-fill"
+              style={{ width: `${Math.max(2, processingMedia.progressPercent || 0)}%` }}
+            />
+          </div>
+          <span className="whitespace-nowrap text-[10px] text-[var(--warn)]">
+            {(processingMedia.progressPercent || 0).toFixed(0)}% · ETA{" "}
+            {formatEta(processingMedia.progressEtaSeconds || 0)}
+          </span>
+        </div>
+      )}
 
+      {/* Center — project name */}
+      <div
+        className="titlebar-center pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+        data-tauri-drag-region
+      >
+        <div
+          className="max-w-[220px] truncate text-center text-[12px] font-semibold tracking-wide text-[var(--text)]"
+          title={projectName}
+        >
+          {projectName}
+          {dirty ? "*" : ""}
+        </div>
+      </div>
+
+      <div className="titlebar-spacer" data-tauri-drag-region />
+
+      {/* Right cluster — Import · Blur · Export · window controls */}
       <button
         className="btn btn-icon"
         onClick={() => void importMedia()}
@@ -267,35 +303,6 @@ export function Toolbar() {
         Blur
       </label>
 
-      <div className="min-w-0 flex-1 px-2">
-        {processingMedia && (
-          <div className="flex items-center gap-2">
-            <div className="progress-track max-w-[220px] flex-1">
-              <div
-                className="progress-fill"
-                style={{ width: `${Math.max(2, processingMedia.progressPercent || 0)}%` }}
-              />
-            </div>
-            <span className="whitespace-nowrap text-[10px] text-[var(--warn)]">
-              {(processingMedia.progressPercent || 0).toFixed(0)}% · ETA{" "}
-              {formatEta(processingMedia.progressEtaSeconds || 0)}
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div
-        className={`autosave-pill ${dirty ? "pending" : "ok"}`}
-        title={
-          lastAutoSavedAt
-            ? `Last auto-save ${new Date(lastAutoSavedAt).toLocaleTimeString()}`
-            : "Auto-save runs while you edit"
-        }
-      >
-        <span className="autosave-dot" />
-        {autoLabel}
-      </div>
-
       <button
         className="btn btn-accent shrink-0"
         onClick={() => {
@@ -309,8 +316,6 @@ export function Toolbar() {
       >
         {exporting ? "Exporting…" : "Export"}
       </button>
-
-      <div className="titlebar-spacer" data-tauri-drag-region />
 
       <div className="window-controls">
         <button
