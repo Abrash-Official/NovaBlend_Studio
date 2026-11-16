@@ -138,7 +138,17 @@ export function ExportDialog() {
             if (fx?.effects?.effect && fx.effects.effect !== "none") {
               next = {
                 ...next,
-                effects: { ...next.effects, effect: fx.effects.effect },
+                effects: {
+                  ...next.effects,
+                  effect: fx.effects.effect,
+                  brightness: fx.effects.brightness,
+                  contrast: fx.effects.contrast,
+                  saturation: fx.effects.saturation,
+                  sharpness: fx.effects.sharpness ?? 0,
+                  temperature: fx.effects.temperature ?? 0,
+                  tint: fx.effects.tint ?? 0,
+                  vignetteAmount: fx.effects.vignetteAmount ?? 0,
+                },
               };
             }
           }

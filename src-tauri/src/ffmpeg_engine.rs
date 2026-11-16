@@ -16,6 +16,14 @@ pub struct ClipEffects {
     pub brightness: f64,
     pub contrast: f64,
     pub saturation: f64,
+    #[serde(default)]
+    pub sharpness: f64,
+    #[serde(default)]
+    pub temperature: f64,
+    #[serde(default)]
+    pub tint: f64,
+    #[serde(default)]
+    pub vignette_amount: f64,
     pub scale: f64,
     pub rotation: f64,
     pub opacity: f64,
@@ -47,6 +55,10 @@ impl Default for ClipEffects {
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
+            sharpness: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            vignette_amount: 0.0,
             scale: 1.0,
             rotation: 0.0,
             opacity: 1.0,
@@ -477,6 +489,29 @@ fn effect_filters(fx: &ClipEffects, clip_duration: f64) -> Vec<String> {
         }
         "high_sat" => filters.push("eq=contrast=1.15:saturation=1.8:brightness=0.03".into()),
         _ => {}
+    }
+
+    // Tunable filter knobs (from FX layer / clip)
+    if fx.sharpness > 0.02 {
+        let amt = fx.sharpness.clamp(0.0, 2.0);
+        filters.push(format!("unsharp=5:5:{amt}:5:5:0.0"));
+    }
+    if fx.temperature.abs() > 0.02 || fx.tint.abs() > 0.02 {
+        let t = fx.temperature.clamp(-1.0, 1.0);
+        let n = fx.tint.clamp(-1.0, 1.0);
+        filters.push(format!(
+            "colorbalance=rs={:.3}:gs={:.3}:bs={:.3}:rm={:.3}:gm={:.3}:bm={:.3}",
+            t * 0.28,
+            n * 0.14,
+            -t * 0.28,
+            t * 0.16,
+            n * 0.1,
+            -t * 0.16
+        ));
+    }
+    if fx.vignette_amount > 0.02 {
+        let a = fx.vignette_amount.clamp(0.05, 1.0);
+        filters.push(format!("vignette={}", std::f64::consts::PI / 4.0 * a));
     }
 
     if fx.fade_in > 0.02 {

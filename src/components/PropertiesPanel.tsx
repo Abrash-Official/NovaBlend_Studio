@@ -3,6 +3,8 @@ import { useEditorStore } from "../store/editorStore";
 import {
   DEFAULT_TEXT,
   EFFECT_PRESETS,
+  EFFECT_TUNE_DEFAULTS,
+  effectsForLook,
   isFxClip,
   isTextClip,
   TEXT_FONTS,
@@ -528,27 +530,41 @@ export function PropertiesPanel() {
   }
 
   if (isFxClip(clip)) {
+    const tune = EFFECT_TUNE_DEFAULTS[fx.effect] || EFFECT_TUNE_DEFAULTS.none;
+    const locked = !!tracks.find((t) => t.index === clip.trackIndex)?.locked;
+
     return (
       <aside className="panel flex h-full flex-col overflow-hidden">
         <div className="border-b border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
           FX Layer
         </div>
-        <div className="flex-1 space-y-3 overflow-auto p-3">
+        <div
+          className={`flex-1 space-y-3 overflow-auto p-3 ${locked ? "pointer-events-none opacity-55" : ""}`}
+        >
           <div className="truncate text-sm font-medium">{clip.name}</div>
-          <div className="text-[11px] text-[var(--muted)]">
-            Purple F1 blocks control when a filter/effect is active. Trim the ends on the
-            timeline to change length, or drag to move it.
-          </div>
+          {locked ? (
+            <div className="text-[11px] text-[var(--warn)]">
+              Track locked — unlock F1 to edit values.
+            </div>
+          ) : (
+            <div className="text-[11px] text-[var(--muted)]">
+              Tune the math behind this look. Changes update the preview live.
+            </div>
+          )}
+
           <div className="field-label">Look</div>
           <select
             className="btn w-full"
             value={fx.effect}
+            disabled={locked}
             onChange={(e) => {
               const id = e.target.value;
               const label =
                 EFFECT_PRESETS.find((p) => p.id === id)?.label || id;
-              updateSelectedEffects({ effect: id });
-              updateClip(clip.id, { name: label });
+              updateClip(clip.id, {
+                name: label,
+                effects: effectsForLook(id),
+              });
             }}
           >
             {EFFECT_PRESETS.filter((p) => p.id !== "none").map((p) => (
@@ -557,6 +573,83 @@ export function PropertiesPanel() {
               </option>
             ))}
           </select>
+
+          <div className="rounded border border-[var(--line)] bg-[var(--bg-2)] p-2 text-[10px] text-[var(--muted)]">
+            Look baseline · B {tune.brightness.toFixed(2)} · C {tune.contrast.toFixed(2)} · S{" "}
+            {tune.saturation.toFixed(2)} · Sharp {tune.sharpness.toFixed(2)}
+          </div>
+
+          <div className="field-label">Filter Adjustment</div>
+          <SliderRow
+            label="Brightness"
+            min={-0.5}
+            max={0.5}
+            step={0.01}
+            value={fx.brightness}
+            onChange={(brightness) => updateSelectedEffects({ brightness })}
+          />
+          <SliderRow
+            label="Contrast"
+            min={0.4}
+            max={2.2}
+            step={0.01}
+            value={fx.contrast}
+            onChange={(contrast) => updateSelectedEffects({ contrast })}
+          />
+          <SliderRow
+            label="Saturation"
+            min={0}
+            max={2.5}
+            step={0.01}
+            value={fx.saturation}
+            onChange={(saturation) => updateSelectedEffects({ saturation })}
+          />
+          <SliderRow
+            label="Sharpness"
+            min={0}
+            max={2}
+            step={0.01}
+            value={fx.sharpness ?? 0}
+            onChange={(sharpness) => updateSelectedEffects({ sharpness })}
+          />
+          <SliderRow
+            label="Temperature"
+            min={-1}
+            max={1}
+            step={0.01}
+            value={fx.temperature ?? 0}
+            onChange={(temperature) => updateSelectedEffects({ temperature })}
+          />
+          <SliderRow
+            label="Tint"
+            min={-1}
+            max={1}
+            step={0.01}
+            value={fx.tint ?? 0}
+            onChange={(tint) => updateSelectedEffects({ tint })}
+          />
+          <SliderRow
+            label="Vignette"
+            min={0}
+            max={1}
+            step={0.01}
+            value={fx.vignetteAmount ?? 0}
+            onChange={(vignetteAmount) => updateSelectedEffects({ vignetteAmount })}
+          />
+
+          <button
+            type="button"
+            className="btn w-full"
+            disabled={locked}
+            onClick={() => {
+              updateClip(clip.id, {
+                effects: effectsForLook(fx.effect),
+              });
+            }}
+          >
+            Reset to look defaults
+          </button>
+
           <div className="field-label">Duration {clip.duration.toFixed(2)}s</div>
           <div className="flex flex-wrap gap-1">
             <button className="btn" onClick={() => trimSelected("in", -0.1)}>

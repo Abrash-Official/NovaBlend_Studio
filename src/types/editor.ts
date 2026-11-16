@@ -43,6 +43,14 @@ export interface ClipEffects {
   brightness: number;
   contrast: number;
   saturation: number;
+  /** Sharpen amount 0–2 (filter look) */
+  sharpness: number;
+  /** Warm ↔ cool, -1…1 */
+  temperature: number;
+  /** Magenta ↔ green tint, -1…1 */
+  tint: number;
+  /** Edge darkening 0–1 */
+  vignetteAmount: number;
   scale: number;
   rotation: number;
   opacity: number;
@@ -123,25 +131,179 @@ export function isFxClip(clip: TimelineClip): boolean {
   return clip.trackKind === "fx";
 }
 
-/** Active filter/effect id from overlapping FX clips at time t (topmost wins). */
-export function activeFxEffectAt(
+/** Topmost FX clip active at time t (hidden tracks skipped). */
+export function activeFxClipAt(
   clips: TimelineClip[],
   t: number,
   hiddenTrackIndexes?: Set<number>,
-): string | null {
+): TimelineClip | null {
   const active = clips
     .filter(
       (c) =>
         c.trackKind === "fx" &&
         t >= c.start &&
         t < c.start + c.duration &&
-        (!hiddenTrackIndexes || !hiddenTrackIndexes.has(c.trackIndex)),
+        (!hiddenTrackIndexes || !hiddenTrackIndexes.has(c.trackIndex)) &&
+        (c.effects?.effect || "none") !== "none",
     )
     .sort((a, b) => a.trackIndex - b.trackIndex);
-  const top = active[active.length - 1];
-  if (!top) return null;
-  const id = top.effects?.effect || "none";
-  return id === "none" ? null : id;
+  return active[active.length - 1] || null;
+}
+
+/** @deprecated Prefer activeFxClipAt for tunable values */
+export function activeFxEffectAt(
+  clips: TimelineClip[],
+  t: number,
+  hiddenTrackIndexes?: Set<number>,
+): string | null {
+  const top = activeFxClipAt(clips, t, hiddenTrackIndexes);
+  return top?.effects?.effect || null;
+}
+
+export type EffectTune = {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  sharpness: number;
+  temperature: number;
+  tint: number;
+  vignetteAmount: number;
+};
+
+/** Starting filter values for each look (user-tunable after). */
+export const EFFECT_TUNE_DEFAULTS: Record<string, EffectTune> = {
+  none: {
+    brightness: 0,
+    contrast: 1,
+    saturation: 1,
+    sharpness: 0,
+    temperature: 0,
+    tint: 0,
+    vignetteAmount: 0,
+  },
+  grayscale: {
+    brightness: 0.02,
+    contrast: 1.1,
+    saturation: 0,
+    sharpness: 0.15,
+    temperature: 0,
+    tint: 0,
+    vignetteAmount: 0.15,
+  },
+  sepia: {
+    brightness: 0.04,
+    contrast: 1.05,
+    saturation: 0.85,
+    sharpness: 0,
+    temperature: 0.35,
+    tint: 0.1,
+    vignetteAmount: 0.2,
+  },
+  vignette: {
+    brightness: -0.06,
+    contrast: 1.12,
+    saturation: 1.05,
+    sharpness: 0.1,
+    temperature: 0,
+    tint: 0,
+    vignetteAmount: 0.65,
+  },
+  sharpen: {
+    brightness: 0.02,
+    contrast: 1.15,
+    saturation: 1.05,
+    sharpness: 1.1,
+    temperature: 0,
+    tint: 0,
+    vignetteAmount: 0,
+  },
+  teal_orange: {
+    brightness: 0.04,
+    contrast: 1.12,
+    saturation: 1.25,
+    sharpness: 0.35,
+    temperature: 0.2,
+    tint: -0.15,
+    vignetteAmount: 0.25,
+  },
+  cyberpunk: {
+    brightness: 0.05,
+    contrast: 1.2,
+    saturation: 1.45,
+    sharpness: 0.5,
+    temperature: -0.45,
+    tint: 0.25,
+    vignetteAmount: 0.3,
+  },
+  noir: {
+    brightness: -0.04,
+    contrast: 1.35,
+    saturation: 0,
+    sharpness: 0.4,
+    temperature: 0,
+    tint: 0,
+    vignetteAmount: 0.45,
+  },
+  warm_glow: {
+    brightness: 0.08,
+    contrast: 1.02,
+    saturation: 1.15,
+    sharpness: 0.1,
+    temperature: 0.55,
+    tint: 0.1,
+    vignetteAmount: 0.2,
+  },
+  cold_blue: {
+    brightness: 0.02,
+    contrast: 1.08,
+    saturation: 1.12,
+    sharpness: 0.2,
+    temperature: -0.5,
+    tint: -0.1,
+    vignetteAmount: 0.15,
+  },
+  vhs: {
+    brightness: 0.03,
+    contrast: 1.18,
+    saturation: 0.9,
+    sharpness: 0,
+    temperature: 0.15,
+    tint: 0.05,
+    vignetteAmount: 0.35,
+  },
+  bloom: {
+    brightness: 0.1,
+    contrast: 0.95,
+    saturation: 1.08,
+    sharpness: 0,
+    temperature: 0.2,
+    tint: 0,
+    vignetteAmount: 0.1,
+  },
+  high_sat: {
+    brightness: 0.04,
+    contrast: 1.12,
+    saturation: 1.55,
+    sharpness: 0.45,
+    temperature: 0.05,
+    tint: 0,
+    vignetteAmount: 0.1,
+  },
+};
+
+export function effectsForLook(effectId: string): ClipEffects {
+  const tune = EFFECT_TUNE_DEFAULTS[effectId] || EFFECT_TUNE_DEFAULTS.none;
+  return {
+    ...DEFAULT_EFFECTS(),
+    effect: effectId,
+    brightness: tune.brightness,
+    contrast: tune.contrast,
+    saturation: tune.saturation,
+    sharpness: tune.sharpness,
+    temperature: tune.temperature,
+    tint: tune.tint,
+    vignetteAmount: tune.vignetteAmount,
+  };
 }
 
 export type ExportFps = 25 | 30 | 60;
@@ -188,6 +350,10 @@ export const DEFAULT_EFFECTS = (): ClipEffects => ({
   brightness: 0,
   contrast: 1,
   saturation: 1,
+  sharpness: 0,
+  temperature: 0,
+  tint: 0,
+  vignetteAmount: 0,
   scale: 1,
   rotation: 0,
   opacity: 1,
@@ -294,33 +460,50 @@ export const STICKER_PRESETS = [
 
 /** CSS filter string for preview (export uses FFmpeg equivalents). */
 export function cssFilterForEffect(effect: string, fx: ClipEffects): string {
-  const base = `brightness(${1 + fx.brightness}) contrast(${fx.contrast}) saturate(${fx.saturation})`;
+  const sharpBoost = 1 + Math.max(0, fx.sharpness || 0) * 0.12;
+  const tempDeg = (fx.temperature || 0) * 28;
+  const tintDeg = (fx.tint || 0) * 18;
+  const hue = tempDeg + tintDeg;
+
+  let look = `brightness(${1 + fx.brightness}) contrast(${fx.contrast * sharpBoost}) saturate(${fx.saturation})`;
+  if (Math.abs(hue) > 0.5) look += ` hue-rotate(${hue.toFixed(1)}deg)`;
+
   switch (effect) {
     case "grayscale":
-      return `${base} grayscale(1)`;
+      look += " grayscale(1)";
+      break;
     case "sepia":
-      return `${base} sepia(0.85)`;
+      look += " sepia(0.75)";
+      break;
     case "vignette":
-      return `${base}`;
+      break;
     case "sharpen":
-      return `${base} contrast(${fx.contrast * 1.08})`;
+      look += ` contrast(${(1 + (fx.sharpness || 0) * 0.08).toFixed(3)})`;
+      break;
     case "teal_orange":
-      return `brightness(${1.05 + fx.brightness}) contrast(${fx.contrast * 1.15}) saturate(${fx.saturation * 1.35}) hue-rotate(-12deg)`;
+      look += " sepia(0.12)";
+      break;
     case "cyberpunk":
-      return `brightness(${1.08 + fx.brightness}) contrast(${fx.contrast * 1.25}) saturate(${fx.saturation * 1.6}) hue-rotate(200deg)`;
+      look += " hue-rotate(12deg)";
+      break;
     case "noir":
-      return `grayscale(1) contrast(${fx.contrast * 1.4}) brightness(${0.95 + fx.brightness})`;
+      look += " grayscale(1)";
+      break;
     case "warm_glow":
-      return `brightness(${1.1 + fx.brightness}) contrast(${fx.contrast}) saturate(${fx.saturation * 1.2}) sepia(0.25)`;
+      look += " sepia(0.22)";
+      break;
     case "cold_blue":
-      return `brightness(${1.02 + fx.brightness}) contrast(${fx.contrast * 1.1}) saturate(${fx.saturation * 1.15}) hue-rotate(190deg)`;
+      break;
     case "vhs":
-      return `contrast(${fx.contrast * 1.2}) saturate(${fx.saturation * 0.85}) brightness(${1 + fx.brightness}) hue-rotate(8deg)`;
+      look += " contrast(1.05) hue-rotate(4deg)";
+      break;
     case "bloom":
-      return `brightness(${1.12 + fx.brightness}) contrast(${fx.contrast * 0.95}) saturate(${fx.saturation * 1.1}) blur(0.3px)`;
+      look += " brightness(1.04) blur(0.25px)";
+      break;
     case "high_sat":
-      return `brightness(${1.05 + fx.brightness}) contrast(${fx.contrast * 1.15}) saturate(${fx.saturation * 1.8})`;
+      break;
     default:
-      return base;
+      break;
   }
+  return look;
 }

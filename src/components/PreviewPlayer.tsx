@@ -2,9 +2,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import {
-  activeFxEffectAt,
+  activeFxClipAt,
   cssFilterForEffect,
-  DEFAULT_EFFECTS,
   DEFAULT_TEXT,
   isStillClip,
   isTextClip,
@@ -396,18 +395,33 @@ export function PreviewPlayer() {
             const fx = clip.effects;
             const localT = ph - clip.start;
             const scale = lerp(fx.scaleKeyframes, localT, fx.scale);
-            const opacity =
-              lerp(fx.opacityKeyframes, localT, fx.opacity) *
-              fadeMultiplier(localT, clip.duration, fx.fadeIn || 0, fx.fadeOut || 0);
 
             const hiddenFx = new Set(
               state.tracks.filter((t) => t.hidden && t.kind === "fx").map((t) => t.index),
             );
-            const layerFx = activeFxEffectAt(state.clips, ph, hiddenFx);
-            const lookId = layerFx || fx.effect || "none";
-            const lookFx = layerFx
-              ? { ...DEFAULT_EFFECTS(), effect: layerFx, brightness: fx.brightness, contrast: fx.contrast, saturation: fx.saturation }
+            const fxLayer = activeFxClipAt(state.clips, ph, hiddenFx);
+            const lookId = fxLayer?.effects?.effect || fx.effect || "none";
+            // Prefer tunable values from the F1 clip when one is active
+            const lookFx = fxLayer?.effects
+              ? {
+                  ...fx,
+                  ...fxLayer.effects,
+                  // Keep clip transform from the video; color/look from FX layer
+                  scale: fx.scale,
+                  rotation: fx.rotation,
+                  mirrorH: fx.mirrorH,
+                  mirrorV: fx.mirrorV,
+                  speed: fx.speed,
+                  fadeIn: fx.fadeIn,
+                  fadeOut: fx.fadeOut,
+                  scaleKeyframes: fx.scaleKeyframes,
+                  opacityKeyframes: fx.opacityKeyframes,
+                }
               : fx;
+
+            const opacity =
+              lerp(fx.opacityKeyframes, localT, fx.opacity) *
+              fadeMultiplier(localT, clip.duration, fx.fadeIn || 0, fx.fadeOut || 0);
 
             const drawVideo = (
               targetW: number,
@@ -439,6 +453,22 @@ export function PreviewPlayer() {
               const dw = video.videoWidth * fit;
               const dh = video.videoHeight * fit;
               drawVideo(dw, dh, (W - dw) / 2, (H - dh) / 2);
+
+              const vig = lookFx.vignetteAmount ?? 0;
+              if (vig > 0.02) {
+                const g = ctx.createRadialGradient(
+                  W / 2,
+                  H / 2,
+                  Math.min(W, H) * (0.35 - vig * 0.12),
+                  W / 2,
+                  H / 2,
+                  Math.max(W, H) * 0.72,
+                );
+                g.addColorStop(0, "rgba(0,0,0,0)");
+                g.addColorStop(1, `rgba(0,0,0,${Math.min(0.92, 0.35 + vig * 0.55).toFixed(3)})`);
+                ctx.fillStyle = g;
+                ctx.fillRect(0, 0, W, H);
+              }
             } else {
               const pipW = W * 0.35 * scale;
               const pipH = (video.videoHeight / video.videoWidth) * pipW;

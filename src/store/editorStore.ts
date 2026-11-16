@@ -6,6 +6,7 @@ import {
   DEFAULT_EFFECTS,
   DEFAULT_TEXT,
   EFFECT_PRESETS,
+  effectsForLook,
   isFxClip,
   isStillClip,
   isTextClip,
@@ -465,7 +466,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const label =
       EFFECT_PRESETS.find((p) => p.id === effectId)?.label || effectId;
 
-    // Replacing effect on an existing selected FX clip
+    // Replacing effect on an existing selected FX clip — reset tune to that look’s defaults
     if (selected?.trackKind === "fx") {
       set((st) => ({
         clips: st.clips.map((c) =>
@@ -473,12 +474,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
             ? {
                 ...c,
                 name: label,
-                effects: { ...c.effects, effect: effectId },
+                effects: effectsForLook(effectId),
               }
             : c,
         ),
         dirty: true,
-        status: `Updated FX: ${label} — trim on F1 to set length`,
+        status: `Updated FX: ${label} — tweak values in Properties`,
       }));
       return;
     }
@@ -496,13 +497,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       duration,
       inPoint: 0,
       outPoint: duration,
-      effects: { ...DEFAULT_EFFECTS(), effect: effectId },
+      effects: effectsForLook(effectId),
     };
     set((st) => ({
       clips: [...st.clips, clip],
       selectedClipId: clip.id,
       dirty: true,
-      status: `Added ${label} on F1 — drag ends to change duration`,
+      status: `Added ${label} on F1 — tweak brightness/contrast in Properties`,
     }));
   },
 
