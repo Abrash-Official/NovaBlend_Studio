@@ -2,20 +2,20 @@
   "expo": {
     "name": "NovaBlend Studio",
     "slug": "novablend-studio-mobile",
-    "version": "1.0.0",
-    "orientation": "default",
+    "version": "1.0.1",
+    "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "scheme": "novablend",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0b0d12"
+      "backgroundColor": "#000000"
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.novablend.studio",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Import videos and photos into your NovaBlend projects.",
         "NSPhotoLibraryAddUsageDescription": "Save exported videos to your photo library.",
@@ -24,9 +24,9 @@
     },
     "android": {
       "package": "com.novablend.studio",
-      "versionCode": 1,
+      "versionCode": 2,
       "adaptiveIcon": {
-        "backgroundColor": "#0b0d12",
+        "backgroundColor": "#000000",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -36,7 +36,8 @@
         "READ_MEDIA_AUDIO",
         "READ_MEDIA_IMAGES",
         "WRITE_EXTERNAL_STORAGE",
-        "READ_EXTERNAL_STORAGE"
+        "READ_EXTERNAL_STORAGE",
+        "REQUEST_INSTALL_PACKAGES"
       ],
       "predictiveBackGestureEnabled": false
     },
@@ -56,7 +57,8 @@
       ]
     ],
     "extra": {
-      "githubReleasesApi": "https://api.github.com/repos/Abrash-Official/NovaBlend_Studio/releases/latest",
+      "enableUpdateCheck": true,
+      "githubMobileReleasesApi": "",
       "appUpdateChannel": "mobile"
     }
   }

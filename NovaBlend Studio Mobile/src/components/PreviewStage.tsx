@@ -13,7 +13,7 @@ import {
   isTextClip,
   TimelineClip,
 } from "../types/editor";
-import { colors, radii, spacing } from "../theme";
+import { colors } from "../theme";
 
 function lerp(
   keys: { time: number; value: number }[],
@@ -44,7 +44,6 @@ export function PreviewStage() {
   const setPlayhead = useEditorStore((s) => s.setPlayhead);
   const clips = useEditorStore((s) => s.clips);
   const tracks = useEditorStore((s) => s.tracks);
-  const aspect = useEditorStore((s) => s.aspect);
   const projectWidth = useEditorStore((s) => s.projectWidth);
   const projectHeight = useEditorStore((s) => s.projectHeight);
   const backgroundBlur = useEditorStore((s) => s.backgroundBlur);
@@ -177,17 +176,10 @@ export function PreviewStage() {
 
         {!activeVideos.length && !activeTexts.length && (
           <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>No clip at playhead</Text>
-            <Text style={styles.emptySub}>Import media or scrub the timeline</Text>
+            <Text style={styles.emptyTitle}>Add media to start</Text>
+            <Text style={styles.emptySub}>Tap Media in the toolbar below</Text>
           </View>
         )}
-      </View>
-
-      <View style={styles.meta}>
-        <Text style={styles.metaText}>
-          {projectWidth}×{projectHeight} · {aspect}
-          {backgroundBlur ? " · Blur" : ""}
-        </Text>
       </View>
     </View>
   );
@@ -296,16 +288,13 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: spacing.md,
+    backgroundColor: "#000",
   },
   stage: {
     maxWidth: "100%",
     maxHeight: "100%",
     backgroundColor: "#000",
-    borderRadius: radii.md,
     overflow: "hidden",
-    borderWidth: 1,
-    borderColor: colors.line,
   },
   layer: {
     position: "absolute",
@@ -329,8 +318,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  emptyTitle: { color: colors.textMuted, fontWeight: "700" },
+  emptyTitle: { color: colors.textMuted, fontWeight: "700", fontSize: 14 },
   emptySub: { color: colors.textDim, fontSize: 12, marginTop: 4 },
-  meta: { marginTop: 8 },
-  metaText: { color: colors.textDim, fontSize: 11 },
 });

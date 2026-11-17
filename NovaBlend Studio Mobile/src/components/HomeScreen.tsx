@@ -1,21 +1,15 @@
-import { LinearGradient } from "expo-linear-gradient";
 import {
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "./SafeArea";
-import { useState } from "react";
 import { useEditorStore } from "../store/editorStore";
-import { AspectRatioId } from "../types/editor";
 import { colors, radii, spacing } from "../theme";
 import { UpdateBanner } from "./UpdateBanner";
 import { persistProjects } from "../lib/projects";
-
-const ASPECTS: AspectRatioId[] = ["9:16", "16:9", "1:1", "4:5"];
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -23,171 +17,168 @@ export function HomeScreen() {
   const newProject = useEditorStore((s) => s.newProject);
   const openProject = useEditorStore((s) => s.openProject);
   const deleteProject = useEditorStore((s) => s.deleteProject);
-  const [name, setName] = useState("Project 01");
-  const [aspect, setAspect] = useState<AspectRatioId>("9:16");
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
-      <LinearGradient
-        colors={["#121826", "#0b0d12", "#0b0d12"]}
-        style={StyleSheet.absoluteFill}
-      />
-      <UpdateBanner />
-
-      <View style={styles.hero}>
+    <View style={[styles.root, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
         <Text style={styles.brand}>NovaBlend</Text>
-        <Text style={styles.tag}>Mobile studio for iPhone & Android</Text>
+        <Text style={styles.sub}>Projects</Text>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>New project</Text>
-        <TextInput
-          value={name}
-          onChangeText={setName}
-          placeholder="Project name"
-          placeholderTextColor={colors.textDim}
-          style={styles.input}
-        />
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 8 }}
+      <UpdateBanner />
+
+      <ScrollView
+        contentContainerStyle={{
+          paddingHorizontal: spacing.lg,
+          paddingBottom: insets.bottom + 32,
+        }}
+      >
+        <Pressable
+          style={styles.newCard}
+          onPress={() => newProject("New video", "9:16")}
         >
-          {ASPECTS.map((a) => (
+          <View style={styles.plusCircle}>
+            <Text style={styles.plus}>+</Text>
+          </View>
+          <Text style={styles.newTitle}>New video</Text>
+          <Text style={styles.newHint}>Start a CapCut-style edit</Text>
+        </Pressable>
+
+        <View style={styles.rowActions}>
+          <Pressable
+            style={styles.miniCard}
+            onPress={() => newProject("Story 9:16", "9:16")}
+          >
+            <Text style={styles.miniLabel}>9:16</Text>
+            <Text style={styles.miniHint}>TikTok / Reels</Text>
+          </Pressable>
+          <Pressable
+            style={styles.miniCard}
+            onPress={() => newProject("Wide 16:9", "16:9")}
+          >
+            <Text style={styles.miniLabel}>16:9</Text>
+            <Text style={styles.miniHint}>YouTube</Text>
+          </Pressable>
+          <Pressable
+            style={styles.miniCard}
+            onPress={() => newProject("Square 1:1", "1:1")}
+          >
+            <Text style={styles.miniLabel}>1:1</Text>
+            <Text style={styles.miniHint}>Feed</Text>
+          </Pressable>
+        </View>
+
+        <Text style={styles.section}>Recent projects</Text>
+        {!projects.length && (
+          <Text style={styles.empty}>No projects yet — tap New video.</Text>
+        )}
+        <View style={styles.grid}>
+          {projects.map((p) => (
             <Pressable
-              key={a}
-              onPress={() => setAspect(a)}
-              style={[styles.chip, aspect === a && styles.chipOn]}
+              key={p.id}
+              style={styles.project}
+              onPress={() => openProject(p.id)}
+              onLongPress={async () => {
+                deleteProject(p.id);
+                await persistProjects();
+              }}
             >
-              <Text style={[styles.chipText, aspect === a && styles.chipTextOn]}>
-                {a}
+              <View style={styles.thumb}>
+                <Text style={styles.thumbRatio}>{p.aspect}</Text>
+              </View>
+              <Text style={styles.projectName} numberOfLines={1}>
+                {p.name}
+              </Text>
+              <Text style={styles.meta}>
+                {p.clipCount} clips · {new Date(p.savedAt).toLocaleDateString()}
               </Text>
             </Pressable>
           ))}
-        </ScrollView>
-        <Pressable
-          style={styles.primary}
-          onPress={() => newProject(name.trim() || "Untitled", aspect)}
-        >
-          <Text style={styles.primaryText}>Create project</Text>
-        </Pressable>
-      </View>
-
-      <Text style={styles.section}>Recent</Text>
-      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
-        {!projects.length && (
-          <Text style={styles.empty}>No saved projects yet.</Text>
+        </View>
+        {!!projects.length && (
+          <Text style={styles.hint}>Long-press a project to delete</Text>
         )}
-        {projects.map((p) => (
-          <Pressable
-            key={p.id}
-            style={styles.project}
-            onPress={() => openProject(p.id)}
-            onLongPress={async () => {
-              deleteProject(p.id);
-              await persistProjects();
-            }}
-          >
-            <View style={styles.thumb}>
-              <Text style={styles.thumbText}>{p.aspect}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.projectName}>{p.name}</Text>
-              <Text style={styles.meta}>
-                {p.clipCount} clips · {new Date(p.savedAt).toLocaleString()}
-              </Text>
-            </View>
-          </Pressable>
-        ))}
-        <Text style={styles.hint}>Long-press a project to delete</Text>
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: spacing.lg },
-  hero: { marginTop: spacing.lg, marginBottom: spacing.xl },
-  brand: {
-    color: colors.text,
-    fontSize: 36,
-    fontWeight: "800",
-    letterSpacing: -0.5,
+  root: { flex: 1, backgroundColor: colors.bg },
+  header: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
   },
-  tag: { color: colors.textMuted, marginTop: 6, fontSize: 14 },
-  card: {
+  brand: { color: colors.text, fontSize: 28, fontWeight: "800" },
+  sub: { color: colors.textDim, marginTop: 2, fontSize: 13 },
+  newCard: {
+    marginTop: spacing.md,
     backgroundColor: colors.bgPanel,
     borderRadius: radii.lg,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: colors.line,
-    gap: spacing.md,
-  },
-  cardTitle: { color: colors.text, fontWeight: "700", fontSize: 16 },
-  input: {
-    backgroundColor: colors.bgElevated,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.line,
-    color: colors.text,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-  },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: radii.pill,
-    backgroundColor: colors.bgElevated,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  chipOn: { backgroundColor: colors.accentSoft, borderColor: colors.accent },
-  chipText: { color: colors.textMuted, fontWeight: "600", fontSize: 12 },
-  chipTextOn: { color: colors.accent },
-  primary: {
-    backgroundColor: colors.accent,
-    borderRadius: radii.md,
-    paddingVertical: 14,
+    paddingVertical: 28,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: colors.line,
   },
-  primaryText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+  plusCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  plus: { color: "#000", fontSize: 32, fontWeight: "700", marginTop: -2 },
+  newTitle: { color: colors.text, fontWeight: "800", fontSize: 17 },
+  newHint: { color: colors.textDim, marginTop: 4, fontSize: 12 },
+  rowActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: spacing.md,
+  },
+  miniCard: {
+    flex: 1,
+    backgroundColor: colors.bgElevated,
+    borderRadius: radii.md,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: colors.lineSoft,
+  },
+  miniLabel: { color: colors.text, fontWeight: "800", fontSize: 15 },
+  miniHint: { color: colors.textDim, fontSize: 10, marginTop: 4 },
   section: {
     color: colors.textMuted,
     fontWeight: "700",
     marginTop: spacing.xl,
     marginBottom: spacing.md,
-    fontSize: 12,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
+    fontSize: 13,
   },
   empty: { color: colors.textDim, fontSize: 13 },
-  project: {
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "center",
-    padding: 12,
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  project: { width: "47%" },
+  thumb: {
+    aspectRatio: 9 / 14,
     borderRadius: radii.md,
     backgroundColor: colors.bgPanel,
     borderWidth: 1,
-    borderColor: colors.lineSoft,
-    marginBottom: 10,
-  },
-  thumb: {
-    width: 52,
-    height: 52,
-    borderRadius: 10,
-    backgroundColor: "#1a2230",
+    borderColor: colors.line,
     alignItems: "center",
     justifyContent: "center",
   },
-  thumbText: { color: colors.accent, fontWeight: "700", fontSize: 11 },
-  projectName: { color: colors.text, fontWeight: "700", fontSize: 15 },
-  meta: { color: colors.textDim, fontSize: 11, marginTop: 3 },
+  thumbRatio: { color: colors.accent, fontWeight: "800", fontSize: 13 },
+  projectName: {
+    color: colors.text,
+    fontWeight: "700",
+    fontSize: 13,
+    marginTop: 8,
+  },
+  meta: { color: colors.textDim, fontSize: 10, marginTop: 2 },
   hint: {
     color: colors.textDim,
     fontSize: 11,
     textAlign: "center",
-    marginTop: 8,
+    marginTop: 16,
   },
 });

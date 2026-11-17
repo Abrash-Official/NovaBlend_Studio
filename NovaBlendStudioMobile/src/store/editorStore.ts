@@ -86,7 +86,13 @@ interface EditorState {
   past: HistorySnap[];
   future: HistorySnap[];
   projects: ProjectCard[];
-  updateAvailable: null | { version: string; url: string; notes: string };
+  updateAvailable: null | {
+    version: string;
+    url: string;
+    notes: string;
+    apkUrl?: string;
+    versionCode?: number;
+  };
   inspectorOpen: boolean;
   libraryOpen: boolean;
 
@@ -105,7 +111,13 @@ interface EditorState {
   setProjectName: (name: string) => void;
   selectClip: (id: string | null) => void;
   setUpdateAvailable: (
-    v: null | { version: string; url: string; notes: string },
+    v: null | {
+      version: string;
+      url: string;
+      notes: string;
+      apkUrl?: string;
+      versionCode?: number;
+    },
   ) => void;
 
   addMedia: (item: MediaItem) => void;
