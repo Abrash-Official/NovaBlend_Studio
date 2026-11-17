@@ -17,12 +17,14 @@ import { ClipWaveform } from "./ClipWaveform";
 import { ClipFilmstrip } from "./ClipFilmstrip";
 import {
   IconAdd,
+  IconBringForward,
   IconCopy,
   IconCrop,
   IconEye,
   IconEyeOff,
   IconFreeze,
   IconFullscreen,
+  IconHand,
   IconKeyframe,
   IconLock,
   IconMagnet,
@@ -30,6 +32,7 @@ import {
   IconRedo,
   IconRemoveBg,
   IconReverse,
+  IconSendBackward,
   IconSplit,
   IconTrash,
   IconUndo,
@@ -193,6 +196,11 @@ export function Timeline() {
     switchTimeline,
     removeSelectedClip,
     applyCropMask,
+    cropEditing,
+    setCropEditing,
+    boardPanMode,
+    setBoardPanMode,
+    nudgeClipLayer,
     toggleRemoveBg,
     addQuickKeyframe,
     splitSelectedAtPlayhead,
@@ -655,11 +663,30 @@ export function Timeline() {
           </button>
           <button
             type="button"
-            className="tl-tool"
-            title="Crop mask"
-            onClick={() => applyCropMask()}
+            className={`tl-tool ${cropEditing ? "on" : ""}`}
+            title="Crop selected clip"
+            onClick={() => {
+              if (cropEditing) setCropEditing(false);
+              else applyCropMask();
+            }}
           >
             <IconCrop size={14} />
+          </button>
+          <button
+            type="button"
+            className="tl-tool"
+            title="Bring layer forward (on top)"
+            onClick={() => nudgeClipLayer("forward")}
+          >
+            <IconBringForward size={14} />
+          </button>
+          <button
+            type="button"
+            className="tl-tool"
+            title="Send layer backward"
+            onClick={() => nudgeClipLayer("backward")}
+          >
+            <IconSendBackward size={14} />
           </button>
           <button
             type="button"
@@ -692,6 +719,14 @@ export function Timeline() {
             }}
           >
             <IconFullscreen size={14} />
+          </button>
+          <button
+            type="button"
+            className={`tl-tool ${boardPanMode ? "on" : ""}`}
+            title="Hand tool — pan the preview board"
+            onClick={() => setBoardPanMode(!boardPanMode)}
+          >
+            <IconHand size={14} />
           </button>
           <button
             type="button"

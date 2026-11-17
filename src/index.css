@@ -867,6 +867,242 @@ button {
   color: #efb4bb;
 }
 
+/* Zoomable CapCut-style preview board */
+.preview-board-viewport {
+  background: #070a10;
+}
+.preview-board-space {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 28px 20px 12px;
+  background:
+    radial-gradient(
+      circle at 1px 1px,
+      rgba(255, 255, 255, 0.045) 1px,
+      transparent 0
+    )
+    0 0 / 18px 18px,
+    linear-gradient(180deg, #0b1018 0%, #070a10 100%);
+}
+.preview-board-zoom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  will-change: transform;
+}
+.preview-board-viewport.pan-mode {
+  cursor: grab;
+}
+.preview-board-viewport.pan-mode:active {
+  cursor: grabbing;
+}
+.preview-board-viewport.pan-mode .preview-stage {
+  pointer-events: none;
+}
+.video-select-box {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  /* No border stroke — CapCut-like corner dots only (preview UI, never exported) */
+  box-shadow: none;
+  border: 0;
+  background: transparent;
+}
+.video-select-corner {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  margin: 0;
+  background: #fff;
+  border: 1.5px solid rgba(20, 24, 32, 0.55);
+  border-radius: 50%;
+  pointer-events: auto;
+  cursor: nwse-resize;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  z-index: 6;
+}
+.video-select-corner:hover {
+  background: #e8f4ff;
+  transform: scale(1.08);
+}
+.video-select-corner.tl {
+  top: -5px;
+  left: -5px;
+  cursor: nwse-resize;
+}
+.video-select-corner.tr {
+  top: -5px;
+  right: -5px;
+  cursor: nesw-resize;
+}
+.video-select-corner.bl {
+  bottom: -5px;
+  left: -5px;
+  cursor: nesw-resize;
+}
+.video-select-corner.br {
+  bottom: -5px;
+  right: -5px;
+  cursor: nwse-resize;
+}
+
+/* Interactive crop overlay on preview — scoped to video media bounds */
+.crop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+.crop-overlay .crop-toolbar,
+.crop-overlay .crop-window,
+.crop-overlay .crop-handle {
+  pointer-events: auto;
+}
+.crop-video-frame {
+  position: absolute;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55);
+}
+.crop-video-area {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+}
+.crop-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(8, 12, 18, 0.88);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.crop-shape-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.crop-shape-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.crop-shape-btn.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.crop-shape-btn.done {
+  color: #061018;
+  background: var(--accent);
+  border-color: transparent;
+  font-weight: 650;
+}
+.crop-shape-ico {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid currentColor;
+  display: inline-block;
+}
+.crop-shape-ico.box {
+  border-radius: 1px;
+}
+.crop-shape-ico.square {
+  border-radius: 1px;
+  width: 11px;
+  height: 11px;
+}
+.crop-shape-ico.rounded {
+  border-radius: 3px;
+}
+.crop-shape-ico.circle {
+  border-radius: 50%;
+}
+.crop-dim {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.48);
+  pointer-events: none;
+}
+.crop-window {
+  position: absolute;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+  cursor: move;
+}
+.crop-window.circle {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.crop-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  border-radius: 1px;
+  z-index: 2;
+}
+.crop-handle-n {
+  top: -5px;
+  left: 50%;
+  margin-left: -5px;
+  cursor: ns-resize;
+}
+.crop-handle-s {
+  bottom: -5px;
+  left: 50%;
+  margin-left: -5px;
+  cursor: ns-resize;
+}
+.crop-handle-e {
+  right: -5px;
+  top: 50%;
+  margin-top: -5px;
+  cursor: ew-resize;
+}
+.crop-handle-w {
+  left: -5px;
+  top: 50%;
+  margin-top: -5px;
+  cursor: ew-resize;
+}
+.crop-handle-ne {
+  top: -5px;
+  right: -5px;
+  cursor: nesw-resize;
+}
+.crop-handle-nw {
+  top: -5px;
+  left: -5px;
+  cursor: nwse-resize;
+}
+.crop-handle-se {
+  bottom: -5px;
+  right: -5px;
+  cursor: nwse-resize;
+}
+.crop-handle-sw {
+  bottom: -5px;
+  left: -5px;
+  cursor: nesw-resize;
+}
+
 /* CapCut-style timeline playhead (draggable) */
 .tl-playhead {
   position: absolute;
@@ -1423,6 +1659,14 @@ button {
 }
 .mask-shape-icon.box {
   border-radius: 3px;
+}
+.mask-shape-icon.square {
+  width: 20px;
+  height: 20px;
+  border-radius: 2px;
+}
+.mask-shape-icon.rounded {
+  border-radius: 8px;
 }
 .mask-shape-icon.circle {
   width: 20px;

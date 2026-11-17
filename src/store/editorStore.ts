@@ -331,7 +331,7 @@ interface EditorState {
   addClipFromMedia: (mediaId: string, trackIndex?: number) => void;
   addTextClip: (textPatch?: Partial<TextStyle>) => void;
   addFxClip: (effectId: string) => void;
-  addMaskClip: (shape: "box" | "circle") => void;
+  addMaskClip: (shape: "box" | "circle" | "rounded" | "square") => void;
   updateClip: (id: string, patch: Partial<TimelineClip>) => void;
   updateSelectedEffects: (patch: Partial<ClipEffects>) => void;
   updateSelectedText: (patch: Partial<TextStyle>) => void;
@@ -377,6 +377,14 @@ interface EditorState {
   addTimeline: () => void;
   switchTimeline: (id: string) => void;
   applyCropMask: () => void;
+  /** Interactive crop mode on the preview stage */
+  cropEditing: boolean;
+  setCropEditing: (v: boolean) => void;
+  /** Hand tool: pan the preview board without moving clips */
+  boardPanMode: boolean;
+  setBoardPanMode: (v: boolean) => void;
+  /** Move selected video clip up/down in the stack (z-order). */
+  nudgeClipLayer: (direction: "forward" | "backward" | "front" | "back") => void;
   toggleRemoveBg: () => void;
   addQuickKeyframe: () => void;
   clipboardClip: TimelineClip | null;
@@ -431,6 +439,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   layoutTimelineHeight: LAYOUT_DEFAULTS.timelineHeight,
   lastAutoSavedAt: null,
   magnetEnabled: true,
+  cropEditing: false,
+  boardPanMode: false,
   past: [],
   future: [],
   timelineTabs: [{ id: "tl_1", name: "Timeline 01" }],
@@ -594,23 +604,132 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
+  setCropEditing: (v) => set({ cropEditing: v }),
+  setBoardPanMode: (v) =>
+    set({
+      boardPanMode: v,
+      // Pan mode exits crop so tools don't fight
+      cropEditing: v ? false : get().cropEditing,
+      status: v
+        ? "Hand tool on — drag to pan the board (click again to edit)"
+        : "Hand tool off — edit clips on the board",
+    }),
+
   applyCropMask: () => {
     const id = get().selectedClipId;
     if (!id) {
-      set({ status: "Select a clip to crop" });
+      set({ status: "Select a video or image clip to crop" });
       return;
     }
+    const clip = get().clips.find((c) => c.id === id);
+    if (!clip || (clip.trackKind !== "video" && clip.trackKind !== "fx")) {
+      set({ status: "Crop works on video / image clips" });
+      return;
+    }
+    const already = !!clip.effects?.maskEnabled;
     get().pushHistory();
-    get().updateSelectedEffects({
-      maskEnabled: true,
-      maskShape: "box",
-      cropX: 0.08,
-      cropY: 0.08,
-      cropW: 0.84,
-      cropH: 0.84,
-      maskFeather: 6,
+    if (!already) {
+      // Start with full video frame — border hugs media like CapCut
+      get().updateSelectedEffects({
+        maskEnabled: true,
+        maskShape: "box",
+        cropX: 0,
+        cropY: 0,
+        cropW: 1,
+        cropH: 1,
+        maskFeather: 4,
+      });
+    }
+    set({
+      cropEditing: true,
+      boardPanMode: false,
+      status: "Crop mode — drag the video border edges · pick a shape",
     });
-    set({ status: "Crop mask on — tweak in Mask tab" });
+  },
+
+  nudgeClipLayer: (direction) => {
+    const s = get();
+    const clip = s.clips.find((c) => c.id === s.selectedClipId);
+    if (!clip || clip.trackKind !== "video") {
+      set({ status: "Select a video clip to change layer order" });
+      return;
+    }
+    if (s.isClipLocked(clip.id)) {
+      set({ status: "Track is locked" });
+      return;
+    }
+    const videoTracks = s.tracks
+      .filter((t) => t.kind === "video")
+      .sort((a, b) => a.index - b.index);
+    if (videoTracks.length < 2) {
+      // Create a layer above/below so stacking is possible
+      if (direction === "forward" || direction === "front") {
+        get().pushHistory();
+        const neu = get().insertTrackRelative("video", clip.trackIndex, "above");
+        get().moveClip(clip.id, clip.start, neu);
+        set({ status: "Brought to front (new layer)" });
+        return;
+      }
+      get().pushHistory();
+      const neu = get().insertTrackRelative("video", clip.trackIndex, "below");
+      get().moveClip(clip.id, clip.start, neu);
+      set({ status: "Sent to back (new layer)" });
+      return;
+    }
+
+    // Timeline: lower video index = higher on screen = on top in preview
+    const order = videoTracks.map((t) => t.index);
+    const pos = order.indexOf(clip.trackIndex);
+    if (pos < 0) return;
+
+    let targetPos = pos;
+    if (direction === "forward") targetPos = Math.max(0, pos - 1);
+    else if (direction === "backward") targetPos = Math.min(order.length - 1, pos + 1);
+    else if (direction === "front") targetPos = 0;
+    else targetPos = order.length - 1;
+
+    if (targetPos === pos) {
+      set({ status: "Already at that layer" });
+      return;
+    }
+
+    const targetIndex = order[targetPos];
+    // Swap clips between tracks (or move into empty target track)
+    const other = s.clips.find(
+      (c) =>
+        c.id !== clip.id &&
+        c.trackKind === "video" &&
+        c.trackIndex === targetIndex &&
+        !(
+          c.start + c.duration <= clip.start ||
+          clip.start + clip.duration <= c.start
+        ),
+    );
+
+    get().pushHistory();
+    if (other) {
+      // Swap track indices for overlapping clips
+      set((st) => ({
+        clips: st.clips.map((c) => {
+          if (c.id === clip.id) return { ...c, trackIndex: targetIndex };
+          if (c.id === other.id) return { ...c, trackIndex: clip.trackIndex };
+          return c;
+        }),
+        dirty: true,
+        status:
+          direction === "forward" || direction === "front"
+            ? "Brought forward"
+            : "Sent backward",
+      }));
+    } else {
+      get().moveClip(clip.id, clip.start, targetIndex);
+      set({
+        status:
+          direction === "forward" || direction === "front"
+            ? "Brought forward"
+            : "Sent backward",
+      });
+    }
   },
 
   toggleRemoveBg: () => {
@@ -941,7 +1060,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
 
-    const label = shape === "circle" ? "Mask · Circle" : "Mask · Box";
+    const label =
+      shape === "circle"
+        ? "Mask · Circle"
+        : shape === "rounded"
+          ? "Mask · Round"
+          : shape === "square"
+            ? "Mask · Square"
+            : "Mask · Rect";
     const clip: TimelineClip = {
       id: uid("mask"),
       mediaId: "",

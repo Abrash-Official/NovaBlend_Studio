@@ -79,8 +79,8 @@ export interface ClipEffects {
   cropH: number;
   maskEnabled: boolean;
   maskFeather: number;
-  /** Mask geometry */
-  maskShape: "box" | "circle";
+  /** Mask / crop geometry */
+  maskShape: "box" | "circle" | "rounded" | "square";
   motionBlur: number;
   effect: string;
   /** Seconds of fade-in at clip start */

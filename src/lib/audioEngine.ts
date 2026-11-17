@@ -143,11 +143,15 @@ export async function syncMediaAudio(args: {
     controlTransport = true,
   } = args;
 
-  const url = convertFileSrc(srcPath);
-  if (el.dataset.src !== url) {
-    el.dataset.src = url;
-    el.src = url;
-    void el.load();
+  // Preview owns decode/seek when controlTransport is false — never touch src/load
+  // or we fight ensureVideo and spin forever on "Loading frame…".
+  if (controlTransport) {
+    const url = convertFileSrc(srcPath);
+    if (el.dataset.src !== url) {
+      el.dataset.src = url;
+      el.src = url;
+      void el.load();
+    }
   }
 
   // Element volume stays at 1; gain node does boost

@@ -4,6 +4,10 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 const frameCache = new Map<string, Map<number, string>>();
 const inflight = new Map<string, Promise<string | null>>();
 
+/** One shared decoder per media path (serialized) so filmstrip doesn't fight preview. */
+const pathVideos = new Map<string, HTMLVideoElement>();
+const pathQueues = new Map<string, Promise<unknown>>();
+
 function bucketKey(path: string, time: number, bucket = 0.25) {
   const t = Math.max(0, Math.round(time / bucket) * bucket);
   return `${path}::${t.toFixed(2)}`;
@@ -31,7 +35,6 @@ function loadVideo(src: string): Promise<HTMLVideoElement> {
     video.addEventListener("loadeddata", onReady);
     video.addEventListener("error", onErr);
     video.src = src;
-    video.load();
   });
 }
 
@@ -41,7 +44,7 @@ function seek(video: HTMLVideoElement, time: number): Promise<void> {
       0,
       Math.min(time, Math.max(0, (video.duration || time) - 0.04)),
     );
-    if (Math.abs(video.currentTime - target) < 0.04) {
+    if (Math.abs(video.currentTime - target) < 0.04 && video.readyState >= 2) {
       resolve();
       return;
     }
@@ -59,10 +62,35 @@ function seek(video: HTMLVideoElement, time: number): Promise<void> {
     video.addEventListener("error", onErr);
     try {
       video.currentTime = target;
-    } catch (e) {
+    } catch {
       onErr();
     }
   });
+}
+
+async function videoForPath(path: string): Promise<HTMLVideoElement> {
+  const existing = pathVideos.get(path);
+  if (existing && existing.dataset.src && existing.readyState >= 1) {
+    return existing;
+  }
+  const src = convertFileSrc(path);
+  const video = await loadVideo(src);
+  video.dataset.src = src;
+  pathVideos.set(path, video);
+  return video;
+}
+
+function enqueuePath<T>(path: string, job: () => Promise<T>): Promise<T> {
+  const prev = pathQueues.get(path) ?? Promise.resolve();
+  const next = prev.then(job, job);
+  pathQueues.set(
+    path,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
 }
 
 /** Capture one frame as a data URL (cached). */
@@ -81,10 +109,11 @@ export async function captureFilmFrame(
   const existing = inflight.get(key);
   if (existing) return existing;
 
-  const job = (async () => {
+  const job = enqueuePath(path, async () => {
     try {
-      const src = convertFileSrc(path);
-      const video = await loadVideo(src);
+      const cached = pathCache.get(bucket);
+      if (cached) return cached;
+      const video = await videoForPath(path);
       await seek(video, bucket);
       const w = Math.max(1, video.videoWidth || 160);
       const h = Math.max(1, video.videoHeight || 90);
@@ -96,19 +125,17 @@ export async function captureFilmFrame(
       canvas.width = cw;
       canvas.height = ch;
       const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
+      if (!ctx || !video.videoWidth) return null;
       ctx.drawImage(video, 0, 0, cw, ch);
       const url = canvas.toDataURL("image/jpeg", 0.72);
       pathCache.set(bucket, url);
-      video.removeAttribute("src");
-      video.load();
       return url;
     } catch {
       return null;
     } finally {
       inflight.delete(key);
     }
-  })();
+  });
 
   inflight.set(key, job);
   return job;

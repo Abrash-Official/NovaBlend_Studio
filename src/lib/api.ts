@@ -146,7 +146,7 @@ export function clipsToExportPayload(clips: TimelineClip[]) {
       }
       return {
         id: c.id,
-        mediaPath: c.mediaPath || "",
+        mediaPath: c.mediaPath || c.previewPath || "",
         trackIndex: c.trackIndex,
         trackKind: c.trackKind,
         hasAudio: c.hasAudio,

@@ -478,12 +478,9 @@ fn effect_filters(fx: &ClipEffects, clip_duration: f64) -> Vec<String> {
         ));
     }
 
+    // Geometric scale is applied after canvas contain-fit in export_timeline
+    // so stacked layers match preview (pos/scale), not the old PiP path.
     let mid_t = clip_duration * 0.5;
-    let scale = lerp_keyframes(&fx.scale_keyframes, mid_t, fx.scale).max(0.05);
-    if (scale - 1.0).abs() > 0.001 {
-        filters.push(format!("scale=iw*{scale}:ih*{scale}"));
-    }
-
     let opacity = lerp_keyframes(&fx.opacity_keyframes, mid_t, fx.opacity).clamp(0.0, 1.0);
 
     // Color adjustments
@@ -884,6 +881,13 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
     let mut filter_parts: Vec<String> = Vec::new();
     let mut video_labels: Vec<(String, f64, f64, usize, ClipEffects)> = Vec::new();
     let mut audio_labels: Vec<(String, f64)> = Vec::new();
+    let mut blur_plate_used = false;
+    let max_video_track = clips
+        .iter()
+        .filter(|c| c.track_kind == "video")
+        .map(|c| c.track_index)
+        .max()
+        .unwrap_or(0);
 
     // Base canvas
     filter_parts.push(format!(
@@ -931,65 +935,93 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
                     ]
                 };
                 chain.extend(effect_filters(&clip.effects, out_dur));
-                // Fit into canvas while preserving aspect, then pad — used for main track
-                if clip.track_index == 0 {
-                    if req.background_blur {
-                        // Prepare blurred background fill + foreground fit
-                        let vlabel = format!("v{ci}");
-                        let fg = format!("fg{ci}");
-                        let bg = format!("bg{ci}");
-                        let composed = format!("vc{ci}");
-                        // Split path: scale cover blur + scale contain overlay
+
+                let mid_t = out_dur * 0.5;
+                let user_scale =
+                    lerp_keyframes(&clip.effects.scale_keyframes, mid_t, clip.effects.scale)
+                        .max(0.05);
+                let pos_x = clip.effects.pos_x.clamp(-1.0, 1.0);
+                let pos_y = clip.effects.pos_y.clamp(-1.0, 1.0);
+
+                // Only one blur plate, under every other layer (back track / first owner)
+                let use_blur_plate = req.background_blur
+                    && !blur_plate_used
+                    && clip.track_index == max_video_track;
+
+                if use_blur_plate {
+                    blur_plate_used = true;
+                    // Full-canvas plate: cover-blur + sharp contain/scale/pos (matches preview)
+                    let vlabel = format!("v{ci}");
+                    let fg = format!("fg{ci}");
+                    let bg = format!("bg{ci}");
+                    let composed = format!("vc{ci}");
+                    filter_parts.push(format!(
+                        "{}{}[{vlabel}]",
+                        chain[0],
+                        chain[1..].join(",")
+                    ));
+                    filter_parts.push(format!("[{vlabel}]split=2[{fg}raw][{bg}raw]"));
+                    filter_parts.push(format!(
+                        "[{bg}raw]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},gblur=sigma=18,eq=brightness=-0.15[{bg}]"
+                    ));
+                    let mut fg_chain = format!(
+                        "[{fg}raw]scale={w}:{h}:force_original_aspect_ratio=decrease"
+                    );
+                    if (user_scale - 1.0).abs() > 0.001 {
+                        fg_chain.push_str(&format!(",scale=iw*{user_scale}:ih*{user_scale}"));
+                    }
+                    fg_chain.push_str(&format!(",setsar=1,format=rgba[{fg}]"));
+                    filter_parts.push(fg_chain);
+                    filter_parts.push(format!(
+                        "[{bg}][{fg}]overlay=x=(W-w)/2+W*{pos_x}:y=(H-h)/2+H*{pos_y},format=rgba[{composed}]"
+                    ));
+                    if clip.start > 0.001 {
                         filter_parts.push(format!(
-                            "{}{}[{vlabel}]",
-                            chain[0],
-                            chain[1..].join(",")
+                            "[{composed}]setpts=PTS+{}/TB[vc{ci}d]",
+                            clip.start
                         ));
-                        filter_parts.push(format!(
-                            "[{vlabel}]split=2[{fg}raw][{bg}raw]"
+                        video_labels.push((
+                            format!("vc{ci}d"),
+                            clip.start,
+                            out_dur,
+                            clip.track_index,
+                            // Plate is already full-frame + positioned — overlay at 0,0
+                            {
+                                let mut fx = clip.effects.clone();
+                                fx.pos_x = 0.0;
+                                fx.pos_y = 0.0;
+                                fx.scale = 1.0;
+                                fx
+                            },
                         ));
-                        filter_parts.push(format!(
-                            "[{bg}raw]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},gblur=sigma=20[{bg}]"
-                        ));
-                        filter_parts.push(format!(
-                            "[{fg}raw]scale={w}:{h}:force_original_aspect_ratio=decrease[{fg}]"
-                        ));
-                        filter_parts.push(format!(
-                            "[{bg}][{fg}]overlay=(W-w)/2:(H-h)/2[{composed}]"
-                        ));
+                    } else {
                         video_labels.push((
                             composed,
                             clip.start,
                             out_dur,
                             clip.track_index,
-                            clip.effects.clone(),
-                        ));
-                    } else {
-                        chain.push(format!(
-                            "scale={w}:{h}:force_original_aspect_ratio=decrease"
-                        ));
-                        chain.push(format!("pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black"));
-                        chain.push("setsar=1".into());
-                        chain.push("format=rgba".into());
-                        let label = format!("v{ci}");
-                        filter_parts.push(format!(
-                            "{}{}[{label}]",
-                            chain[0],
-                            chain[1..].join(",")
-                        ));
-                        video_labels.push((
-                            label,
-                            clip.start,
-                            out_dur,
-                            clip.track_index,
-                            clip.effects.clone(),
+                            {
+                                let mut fx = clip.effects.clone();
+                                fx.pos_x = 0.0;
+                                fx.pos_y = 0.0;
+                                fx.scale = 1.0;
+                                fx
+                            },
                         ));
                     }
                 } else {
-                    // Overlay / PiP track
-                    let pip_w = ((w as f64) * 0.35 * clip.effects.scale.max(0.1)) as u32;
-                    chain.push(format!("scale={pip_w}:-2"));
+                    // Upper layers: contain-fit → user scale → rgba (preview-matched)
+                    chain.push(format!(
+                        "scale={w}:{h}:force_original_aspect_ratio=decrease"
+                    ));
+                    if (user_scale - 1.0).abs() > 0.001 {
+                        chain.push(format!("scale=iw*{user_scale}:ih*{user_scale}"));
+                    }
+                    chain.push("setsar=1".into());
                     chain.push("format=rgba".into());
+                    if clip.start > 0.001 {
+                        chain.push(format!("setpts=PTS+{}/TB", clip.start));
+                    }
                     let label = format!("v{ci}");
                     filter_parts.push(format!(
                         "{}{}[{label}]",
@@ -1029,24 +1061,22 @@ pub fn export_timeline(app: &AppHandle, req: ExportRequest) -> Result<FfmpegResu
         }
     }
 
-    // Overlay videos onto base in track order
+    // Overlay videos onto base — match preview z-order: high trackIndex under, low on top
+    video_labels.sort_by(|a, b| {
+        b.3.cmp(&a.3)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
     let mut current = "base".to_string();
-    // Enable timeline for delayed overlays
-    for (i, (label, start, _dur, track, fx)) in video_labels.iter().enumerate() {
+    for (i, (label, start, dur, _track, fx)) in video_labels.iter().enumerate() {
         let next = format!("ov{i}");
-        let x = if *track == 0 {
-            "(W-w)/2".to_string()
-        } else {
-            format!("W*{}", fx.pip_x.clamp(0.0, 0.9))
-        };
-        let y = if *track == 0 {
-            "(H-h)/2".to_string()
-        } else {
-            format!("H*{}", fx.pip_y.clamp(0.0, 0.9))
-        };
+        let pos_x = fx.pos_x.clamp(-1.0, 1.0);
+        let pos_y = fx.pos_y.clamp(-1.0, 1.0);
+        // Preview: top-left = (W - w)/2 + posX*W  (w already includes user scale)
+        let x = format!("(W-w)/2+W*{pos_x}");
+        let y = format!("(H-h)/2+H*{pos_y}");
         filter_parts.push(format!(
-            "[{current}][{label}]overlay=x={x}:y={y}:enable='between(t,{start},{end})'[{next}]",
-            end = start + _dur
+            "[{current}][{label}]overlay=x={x}:y={y}:eof_action=pass:enable='between(t,{start},{end})'[{next}]",
+            end = start + dur
         ));
         current = next;
     }

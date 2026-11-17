@@ -32,13 +32,16 @@ export function ClipInspector({
   const isMaskClip = clip.trackKind === "fx" && clip.effects?.effect === "mask";
   const [tab, setTab] = useState<TabId>(isMaskClip ? "mask" : "video");
   const [busy, setBusy] = useState(false);
-  const [pendingShape, setPendingShape] = useState<"box" | "circle">(
-    (clip.effects?.maskShape as "box" | "circle") || "box",
-  );
+  const [pendingShape, setPendingShape] = useState<
+    "box" | "circle" | "rounded" | "square"
+  >((clip.effects?.maskShape as "box" | "circle" | "rounded" | "square") || "box");
 
   useEffect(() => {
     setTab(isMaskClip ? "mask" : "video");
-    setPendingShape((clip.effects?.maskShape as "box" | "circle") || "box");
+    setPendingShape(
+      (clip.effects?.maskShape as "box" | "circle" | "rounded" | "square") ||
+        "box",
+    );
   }, [clip.id, isMaskClip, clip.effects?.maskShape]);
   const fx = { ...DEFAULT_EFFECTS(), ...clip.effects };
   const updateSelectedEffects = useEditorStore((s) => s.updateSelectedEffects);
@@ -201,7 +204,8 @@ export function ClipInspector({
 
   const srcDur = Math.max(0.05, clip.outPoint - clip.inPoint);
   const timelineDur = clip.duration;
-  const shape = (fx.maskShape as "box" | "circle") || "box";
+  const shape =
+    (fx.maskShape as "box" | "circle" | "rounded" | "square") || "box";
   const hasMask = isMaskClip || fx.maskEnabled;
 
   return (
@@ -720,10 +724,12 @@ export function ClipInspector({
                 <div className="mb-3 text-[11px] font-semibold text-[var(--muted)]">
                   Shape
                 </div>
-                <div className="mb-3 flex gap-2">
+                <div className="mb-3 flex flex-wrap gap-2">
                   {(
                     [
-                      ["box", "Box"],
+                      ["box", "Rect"],
+                      ["square", "Square"],
+                      ["rounded", "Round"],
                       ["circle", "Circle"],
                     ] as const
                   ).map(([id, label]) => (
@@ -752,10 +758,12 @@ export function ClipInspector({
                 <div className="mb-3 text-[11px] font-semibold text-[var(--muted)]">
                   Shape
                 </div>
-                <div className="mb-3 flex gap-2">
+                <div className="mb-3 flex flex-wrap gap-2">
                   {(
                     [
-                      ["box", "Box"],
+                      ["box", "Rect"],
+                      ["square", "Square"],
+                      ["rounded", "Round"],
                       ["circle", "Circle"],
                     ] as const
                   ).map(([id, label]) => (
@@ -771,7 +779,7 @@ export function ClipInspector({
                         });
                         if (isMaskClip) {
                           updateClip(clip.id, {
-                            name: id === "circle" ? "Mask · Circle" : "Mask · Box",
+                            name: `Mask · ${label}`,
                           });
                         }
                       }}
@@ -783,9 +791,7 @@ export function ClipInspector({
                   ))}
                 </div>
                 <p className="mb-2 text-[11px] text-[var(--muted)]">
-                  {shape === "circle"
-                    ? "Circular window — adjust crop size and feather."
-                    : "Rectangular window — adjust crop and feather."}
+                  Drag crop edges on the preview (Crop tool), or use the sliders below.
                 </p>
                 <NumberSlider
                   label="Feather"

@@ -364,3 +364,34 @@ export function IconReset(props: IconProps) {
     </Svg>
   );
 }
+
+export function IconBringForward(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="7" y="10" width="12" height="10" rx="1.5" opacity="0.45" />
+      <rect x="4" y="4" width="12" height="10" rx="1.5" />
+      <path d="M10 8l2-2 2 2" />
+    </Svg>
+  );
+}
+
+export function IconSendBackward(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="4" y="4" width="12" height="10" rx="1.5" opacity="0.45" />
+      <rect x="7" y="10" width="12" height="10" rx="1.5" />
+      <path d="M13 16l2 2 2-2" />
+    </Svg>
+  );
+}
+
+export function IconHand(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M7 11V6.2a1.2 1.2 0 0 1 2.4 0V11" />
+      <path d="M9.4 10.5V4.8a1.2 1.2 0 0 1 2.4 0V11" />
+      <path d="M11.8 10.8V6.5a1.2 1.2 0 0 1 2.4 0V12" />
+      <path d="M14.2 12V8.8a1.2 1.2 0 0 1 2.4 0v4.4a5.2 5.2 0 0 1-5.2 5.2h-.4A5.2 5.2 0 0 1 6 14.2V11" />
+    </Svg>
+  );
+}

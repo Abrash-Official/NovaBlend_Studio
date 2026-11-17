@@ -13,6 +13,30 @@ import {
 } from "../types/editor";
 import { syncMediaAudio } from "../lib/audioEngine";
 import { IconPause, IconPlay, IconReset } from "./Icons";
+import { CropOverlay, VideoBound } from "./CropOverlay";
+import { VideoSelectionOverlay } from "./VideoSelectionOverlay";
+
+type VideoDrag = {
+  id: string;
+  originX: number;
+  originY: number;
+  startPosX: number;
+  startPosY: number;
+};
+
+type DrawnRect = {
+  id: string;
+  /** Canvas pixels */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Normalized 0–1 of composition */
+  nx: number;
+  ny: number;
+  nw: number;
+  nh: number;
+};
 
 function fadeMultiplier(
   localT: number,
@@ -146,6 +170,21 @@ export function PreviewPlayer() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
   const [textDrag, setTextDrag] = useState<TextDrag | null>(null);
+  const [videoDrag, setVideoDrag] = useState<VideoDrag | null>(null);
+  const [boardZoom, setBoardZoom] = useState(1);
+  const [boardPan, setBoardPan] = useState({ x: 0, y: 0 });
+  const [boardDragging, setBoardDragging] = useState(false);
+  const boardDragRef = useRef<{
+    originX: number;
+    originY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const [selectedBound, setSelectedBound] = useState<VideoBound | null>(null);
+  const drawnRectsRef = useRef<DrawnRect[]>([]);
+  const lastBoundKeyRef = useRef("");
+  const lastBoundSetAtRef = useRef(0);
+  const paintDirtyRef = useRef(true);
   const {
     clips,
     playhead,
@@ -157,8 +196,12 @@ export function PreviewPlayer() {
     selectedClipId,
     selectClip,
     updateClip,
+    updateSelectedEffects,
+    pushHistory,
     aspect,
     setAspect,
+    cropEditing,
+    boardPanMode,
   } = useEditorStore();
 
   const tracks = useEditorStore((s) => s.tracks);
@@ -272,41 +315,198 @@ export function PreviewPlayer() {
   }, [textDrag, updateClip]);
 
   useEffect(() => {
+    if (!videoDrag) return;
+    const onMove = (e: MouseEvent) => {
+      const frame = frameRef.current;
+      if (!frame) return;
+      const rect = frame.getBoundingClientRect();
+      const dx = (e.clientX - videoDrag.originX) / Math.max(1, rect.width);
+      const dy = (e.clientY - videoDrag.originY) / Math.max(1, rect.height);
+      const posX = Math.min(1, Math.max(-1, videoDrag.startPosX + dx));
+      const posY = Math.min(1, Math.max(-1, videoDrag.startPosY + dy));
+      selectClip(videoDrag.id);
+      updateSelectedEffects({ posX, posY });
+    };
+    const onUp = () => setVideoDrag(null);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [videoDrag, selectClip, updateSelectedEffects]);
+
+  /** Hand-tool pan, or momentary right-click hold (does not toggle boardPanMode). */
+  function beginBoardPan(e: React.MouseEvent, force = false) {
+    if (!force && !boardPanMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setBoardDragging(true);
+    boardDragRef.current = {
+      originX: e.clientX,
+      originY: e.clientY,
+      startX: boardPan.x,
+      startY: boardPan.y,
+    };
+  }
+
+  useEffect(() => {
+    if (!boardDragging) return;
+    const onMove = (e: MouseEvent) => {
+      const d = boardDragRef.current;
+      if (!d) return;
+      setBoardPan({
+        x: d.startX + (e.clientX - d.originX),
+        y: d.startY + (e.clientY - d.originY),
+      });
+    };
+    const onUp = () => {
+      setBoardDragging(false);
+      boardDragRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [boardDragging]);
+
+  function beginVideoDrag(e: React.MouseEvent) {
+    // Right-click hold = temporary hand pan (toolbar Hand stays as-is)
+    if (e.button === 2) {
+      beginBoardPan(e, true);
+      return;
+    }
+    if (boardPanMode) {
+      beginBoardPan(e);
+      return;
+    }
+    if (cropEditing) return;
+    if ((e.target as HTMLElement).closest(".preview-text-item, .crop-overlay")) {
+      return;
+    }
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    // Map click into canvas pixel space
+    const cx =
+      ((e.clientX - canvasRect.left) / Math.max(1, canvasRect.width)) *
+      canvas.width;
+    const cy =
+      ((e.clientY - canvasRect.top) / Math.max(1, canvasRect.height)) *
+      canvas.height;
+    // Topmost first (drawn last = end of ascending visual stack = start of our drawn array is under)
+    const hit = [...drawnRectsRef.current].reverse().find(
+      (r) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h,
+    );
+    if (!hit) return;
+    const state = useEditorStore.getState();
+    const clip = state.clips.find((c) => c.id === hit.id);
+    if (!clip) return;
+    if (state.isClipLocked(clip.id)) {
+      state.setStatus("Track is locked");
+      return;
+    }
+    e.preventDefault();
+    setPlaying(false);
+    selectClip(clip.id);
+    pushHistory();
+    const localT = state.playhead - clip.start;
+    const posX = lerp(
+      clip.effects.posXKeyframes || [],
+      localT,
+      clip.effects.posX ?? 0,
+    );
+    const posY = lerp(
+      clip.effects.posYKeyframes || [],
+      localT,
+      clip.effects.posY ?? 0,
+    );
+    setVideoDrag({
+      id: clip.id,
+      originX: e.clientX,
+      originY: e.clientY,
+      startPosX: posX,
+      startPosY: posY,
+    });
+  }
+
+  useEffect(() => {
     let raf = 0;
     let cancelled = false;
+    let lastPaintAt = 0;
+    paintDirtyRef.current = true;
+    const unsub = useEditorStore.subscribe(() => {
+      paintDirtyRef.current = true;
+    });
 
+    /** One decoder per clip. dataset.src must be the asset URL (same as audioEngine). */
     const ensureVideo = (clipId: string, src: string) => {
+      const url = convertFileSrc(src);
       let video = videoRefs.current.get(clipId);
-      if (!video || video.dataset.src !== src) {
+      if (!video || video.dataset.src !== url) {
+        if (video) {
+          try {
+            video.pause();
+            video.removeAttribute("src");
+            video.load();
+          } catch {
+            /* ignore */
+          }
+        }
         video = document.createElement("video");
-        video.dataset.src = src;
+        video.dataset.src = url;
         video.playsInline = true;
         video.preload = "auto";
+        video.muted = true;
         video.crossOrigin = "anonymous";
-        const url = convertFileSrc(src);
-        video.src = url;
+        const bump = () => {
+          setPreviewError(null);
+          paintDirtyRef.current = true;
+        };
+        video.addEventListener("loadeddata", bump);
+        video.addEventListener("seeked", bump);
+        video.addEventListener("canplay", bump);
         video.onerror = () => {
           setPreviewError(`Cannot decode preview: ${src.split(/[/\\]/).pop()}`);
         };
-        video.onloadeddata = () => {
-          setPreviewError(null);
-        };
+        // Setting src is enough — do not call load() (restarts decode / fights seeks)
+        video.src = url;
         videoRefs.current.set(clipId, video);
-        void video.load();
       }
       return video;
     };
 
-    const paint = () => {
+    const paint = (now: number) => {
       if (cancelled) return;
-      const canvas = canvasRef.current;
       const state = useEditorStore.getState();
+      const playing = state.isPlaying;
+      // CapCut-like: don't burn CPU at 60fps while paused / waiting for a frame
+      const interval = playing ? 33 : 100;
+      if (now - lastPaintAt < interval) {
+        raf = requestAnimationFrame(paint);
+        return;
+      }
+      if (
+        !paintDirtyRef.current &&
+        !playing &&
+        now - lastPaintAt < 400
+      ) {
+        raf = requestAnimationFrame(paint);
+        return;
+      }
+      lastPaintAt = now;
+      paintDirtyRef.current = playing; // keep dirty while playing
+
+      const canvas = canvasRef.current;
       if (canvas) {
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { alpha: false });
         if (ctx) {
           const W = canvas.width;
           const H = canvas.height;
           const ph = state.playhead;
+          // Draw high trackIndex first (under); low index last (on top) — matches timeline top=front
           const active = state.clips
             .filter((c) => {
               if (c.trackKind !== "video") return false;
@@ -314,7 +514,24 @@ export function PreviewPlayer() {
               const track = state.tracks.find((t) => t.index === c.trackIndex);
               return !track?.hidden;
             })
-            .sort((a, b) => a.trackIndex - b.trackIndex);
+            .sort((a, b) => b.trackIndex - a.trackIndex);
+          const drawn: DrawnRect[] = [];
+          const bottomVideoIndex = active.length
+            ? Math.max(...active.map((c) => c.trackIndex))
+            : -1;
+          // Blur letterbox must paint once under every layer (lane stacks share trackIndex)
+          let blurFillDrawn = false;
+
+          const mediaTFor = (clip: TimelineClip) => {
+            if (isStillClip(clip)) {
+              return Math.min(0.04, Math.max(0, clip.inPoint));
+            }
+            const speed = Math.max(0.05, clip.effects.speed || 1);
+            const t =
+              clip.inPoint + Math.max(0, ph - clip.start) * speed;
+            const maxT = Math.max(clip.inPoint, clip.outPoint - 0.001);
+            return Math.min(maxT, Math.max(clip.inPoint, t));
+          };
 
           ctx.fillStyle = "#000";
           ctx.fillRect(0, 0, W, H);
@@ -333,13 +550,6 @@ export function PreviewPlayer() {
               if (!c.hasAudio) return false;
               return (c.effects.volume ?? 1) > 0.01;
             })?.id ?? null;
-
-          for (const [id, video] of videoRefs.current) {
-            if (!active.some((c) => c.id === id)) {
-              if (!video.paused) video.pause();
-              video.muted = true;
-            }
-          }
 
           // Dedicated A1 (and other) audio clips — Web Audio for gain > 1 + voice FX
           const activeAudio = state.clips.filter((c) => {
@@ -396,11 +606,13 @@ export function PreviewPlayer() {
             });
           }
 
+          const activeIds = new Set(active.map((c) => c.id));
           for (const clip of active) {
             const track = state.tracks.find((t) => t.index === clip.trackIndex);
             const src = clip.previewPath || clip.mediaPath;
+            if (!src) continue;
             const video = ensureVideo(clip.id, src);
-            video.crossOrigin = "anonymous";
+            video.muted = true;
             const clipLocalT = ph - clip.start;
             let audioGain = Math.max(0, clip.effects.volume ?? 1);
             if (!clip.hasAudio) audioGain = 0;
@@ -428,60 +640,49 @@ export function PreviewPlayer() {
                 muted: false,
                 controlTransport: false,
               });
-            } else {
-              video.muted = true;
             }
 
-            // Freeze / still: always hold the first frame (stretchable on timeline)
-            const local = isStillClip(clip)
-              ? Math.min(0.04, Math.max(0, clip.inPoint))
-              : Math.min(
-                  clip.outPoint - 0.04,
-                  Math.max(
-                    clip.inPoint,
-                    (ph - clip.start) * (clip.effects.speed || 1) + clip.inPoint,
-                  ),
-                );
-
+            const local = mediaTFor(clip);
             const drift = Math.abs((video.currentTime || 0) - local);
-            if (isStillClip(clip)) {
-              if (video.readyState >= 1 && drift > 0.02) {
+            // Never interrupt an in-flight seek — that left preview stuck on "Loading frame…"
+            if (!video.seeking && video.readyState >= 1) {
+              if (isStillClip(clip)) {
+                if (drift > 0.03) {
+                  try {
+                    video.currentTime = local;
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              } else if (!state.isPlaying) {
+                if (drift > 0.05) {
+                  try {
+                    video.currentTime = local;
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              } else if (drift > 0.45) {
                 try {
                   video.currentTime = local;
                 } catch {
                   /* ignore */
                 }
               }
+            }
+
+            if (isStillClip(clip) || !state.isPlaying) {
               if (!video.paused) video.pause();
-            } else if (!state.isPlaying) {
-              if (drift > 0.04 && video.readyState >= 1) {
-                try {
-                  video.currentTime = local;
-                } catch {
-                  /* ignore */
-                }
-              }
-            } else if (drift > 0.35 && video.readyState >= 1) {
-              try {
-                video.currentTime = local;
-              } catch {
-                /* ignore */
-              }
+            } else if (video.paused) {
+              void video.play().catch(() => undefined);
             }
 
-            if (!isStillClip(clip)) {
-              if (state.isPlaying) {
-                if (video.paused) void video.play().catch(() => undefined);
-              } else if (!video.paused) {
-                video.pause();
-              }
-            }
-
-            if (video.readyState < 2 || !video.videoWidth) {
+            if (video.seeking || video.readyState < 2 || !video.videoWidth) {
               ctx.fillStyle = "#8a96a8";
               ctx.font = "14px Segoe UI";
               ctx.textAlign = "center";
               ctx.fillText("Loading frame…", W / 2, H / 2);
+              paintDirtyRef.current = true;
               continue;
             }
 
@@ -560,8 +761,9 @@ export function PreviewPlayer() {
                 const my = -targetH / 2 + (maskFx.cropY || 0) * targetH;
                 const mw = Math.max(2, (maskFx.cropW || 1) * targetW);
                 const mh = Math.max(2, (maskFx.cropH || 1) * targetH);
+                const shape = maskFx.maskShape || "box";
                 ctx.beginPath();
-                if ((maskFx.maskShape || "box") === "circle") {
+                if (shape === "circle") {
                   ctx.ellipse(
                     mx + mw / 2,
                     my + mh / 2,
@@ -572,8 +774,16 @@ export function PreviewPlayer() {
                     Math.PI * 2,
                   );
                 } else {
-                  const r = Math.min(24, (maskFx.maskFeather || 0) * 0.6);
-                  if (typeof (ctx as CanvasRenderingContext2D).roundRect === "function") {
+                  const r =
+                    shape === "rounded"
+                      ? Math.min(mw, mh) * 0.18
+                      : shape === "square"
+                        ? Math.min(12, (maskFx.maskFeather || 0) * 0.4)
+                        : Math.min(24, (maskFx.maskFeather || 0) * 0.6);
+                  if (
+                    typeof (ctx as CanvasRenderingContext2D).roundRect ===
+                    "function"
+                  ) {
                     ctx.roundRect(mx, my, mw, mh, r);
                   } else {
                     ctx.rect(mx, my, mw, mh);
@@ -631,26 +841,49 @@ export function PreviewPlayer() {
               ctx.restore();
             };
 
-            if (clip.trackIndex === 0) {
-              if (state.backgroundBlur) {
-                const cover = Math.max(W / video.videoWidth, H / video.videoHeight);
-                const bw = video.videoWidth * cover;
-                const bh = video.videoHeight * cover;
-                ctx.save();
-                ctx.filter = "blur(18px) brightness(0.55)";
-                ctx.drawImage(video, (W - bw) / 2, (H - bh) / 2, bw, bh);
-                ctx.restore();
-              }
-              const fit = Math.min(W / video.videoWidth, H / video.videoHeight);
-              const dw = video.videoWidth * fit;
-              const dh = video.videoHeight * fit;
-              drawVideo(
-                dw,
-                dh,
-                (W - dw) / 2 + posX * W,
-                (H - dh) / 2 + posY * H,
+            // CapCut Blur: one cover fill behind all layers (never between stacked clips)
+            if (
+              !blurFillDrawn &&
+              clip.trackIndex === bottomVideoIndex &&
+              state.backgroundBlur &&
+              video.videoWidth > 0 &&
+              video.videoHeight > 0
+            ) {
+              const cover = Math.max(
+                W / video.videoWidth,
+                H / video.videoHeight,
               );
+              const bw = video.videoWidth * cover;
+              const bh = video.videoHeight * cover;
+              ctx.save();
+              ctx.filter = "blur(12px) brightness(0.55)";
+              ctx.drawImage(video, (W - bw) / 2, (H - bh) / 2, bw, bh);
+              ctx.restore();
+              blurFillDrawn = true;
+            }
+            const fit = Math.min(W / video.videoWidth, H / video.videoHeight);
+            const dw = video.videoWidth * fit;
+            const dh = video.videoHeight * fit;
+            const dx = (W - dw) / 2 + posX * W;
+            const dy = (H - dh) / 2 + posY * H;
+            drawVideo(dw, dh, dx, dy);
+            const bx = dx + dw / 2 - (dw * scale) / 2;
+            const by = dy + dh / 2 - (dh * scale) / 2;
+            const bw = dw * scale;
+            const bh = dh * scale;
+            drawn.push({
+              id: clip.id,
+              x: bx,
+              y: by,
+              w: bw,
+              h: bh,
+              nx: bx / W,
+              ny: by / H,
+              nw: bw / W,
+              nh: bh / H,
+            });
 
+            if (clip.trackIndex === bottomVideoIndex) {
               const vig = lookFx.vignetteAmount ?? 0;
               if (vig > 0.02) {
                 const g = ctx.createRadialGradient(
@@ -662,19 +895,38 @@ export function PreviewPlayer() {
                   Math.max(W, H) * 0.72,
                 );
                 g.addColorStop(0, "rgba(0,0,0,0)");
-                g.addColorStop(1, `rgba(0,0,0,${Math.min(0.92, 0.35 + vig * 0.55).toFixed(3)})`);
+                g.addColorStop(
+                  1,
+                  `rgba(0,0,0,${Math.min(0.92, 0.35 + vig * 0.55).toFixed(3)})`,
+                );
                 ctx.fillStyle = g;
                 ctx.fillRect(0, 0, W, H);
               }
-            } else {
-              const pipW = W * 0.35 * scale;
-              const pipH = (video.videoHeight / video.videoWidth) * pipW;
-              drawVideo(
-                pipW,
-                pipH,
-                W * (fx.pipX + posX),
-                H * (fx.pipY + posY),
-              );
+            }
+          }
+          drawnRectsRef.current = drawn;
+          const selId = state.selectedClipId;
+          const sel = selId ? drawn.find((d) => d.id === selId) : null;
+          const key = sel
+            ? `${sel.id}:${sel.nx.toFixed(3)},${sel.ny.toFixed(3)},${sel.nw.toFixed(3)},${sel.nh.toFixed(3)}`
+            : "";
+          if (
+            key !== lastBoundKeyRef.current &&
+            now - lastBoundSetAtRef.current > 50
+          ) {
+            lastBoundKeyRef.current = key;
+            lastBoundSetAtRef.current = now;
+            setSelectedBound(
+              sel
+                ? { x: sel.nx, y: sel.ny, w: sel.nw, h: sel.nh }
+                : null,
+            );
+          }
+
+          // Pause decoders for clips not under the playhead (keep element cached)
+          for (const [id, video] of videoRefs.current) {
+            if (!activeIds.has(id) && !video.paused) {
+              video.pause();
             }
           }
         }
@@ -686,6 +938,7 @@ export function PreviewPlayer() {
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
+      unsub();
     };
   }, []);
 
@@ -786,58 +1039,136 @@ export function PreviewPlayer() {
         </div>
       </div>
 
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[#05070b] p-3">
-        <div
-          ref={frameRef}
-          className="preview-stage relative flex h-full max-h-full w-full max-w-full items-center justify-center overflow-hidden border border-[var(--line)] bg-black"
-          style={{
-            aspectRatio: `${projectWidth / projectHeight}`,
-            borderRadius: "var(--radius)",
-          }}
-        >
-          <canvas
-            ref={canvasRef}
-            width={Math.min(projectWidth, 1280)}
-            height={Math.min(
-              projectHeight,
-              Math.round(1280 / Math.max(projectWidth / projectHeight, 0.01)),
-            )}
-            className="max-h-full max-w-full bg-black object-contain"
-          />
-          <div className="preview-text-layer">
-            {activeTextClips.map((clip) => {
-              const text = clip.text || DEFAULT_TEXT();
-              const selected = clip.id === selectedClipId;
-              const locked = tracks.find((t) => t.index === clip.trackIndex)?.locked;
-              return (
-                <div
-                  key={clip.id}
-                  className={`preview-text-item${selected ? " selected" : ""}${locked ? " locked" : ""}`}
-                  style={textCss(text, frameSize.h || projectHeight, projectHeight)}
-                  onMouseDown={(e) => beginMove(e, clip)}
-                  onDoubleClick={(e) => {
-                    e.stopPropagation();
-                    selectClip(clip.id);
-                  }}
-                  title={
-                    locked
-                      ? "Track locked — unlock T1 to edit"
-                      : "Drag to move · use top handle to rotate"
-                  }
-                >
-                  {selected && !locked && (
+      <div
+        className={`preview-board-viewport relative flex min-h-0 flex-1 flex-col overflow-hidden${boardPanMode ? " pan-mode" : ""}`}
+        onWheel={(e) => {
+          e.preventDefault();
+          const factor = e.deltaY > 0 ? 0.9 : 1.11;
+          setBoardZoom((z) =>
+            Math.min(3, Math.max(0.25, Number((z * factor).toFixed(3)))),
+          );
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+        }}
+        onMouseDown={(e) => {
+          if (e.button === 2) {
+            beginBoardPan(e, true);
+            return;
+          }
+          if (boardPanMode) beginBoardPan(e);
+        }}
+      >
+        <div className="preview-board-space">
+          <div
+            className="preview-board-zoom"
+            style={{
+              transform: `translate(${boardPan.x}px, ${boardPan.y}px) scale(${boardZoom})`,
+            }}
+          >
+            <div
+              ref={frameRef}
+              className="preview-stage relative overflow-hidden border border-[var(--line)] bg-black shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
+              style={{
+                aspectRatio: `${projectWidth / projectHeight}`,
+                height: "min(62vh, 100%)",
+                width: "auto",
+                maxWidth: "min(92vw, 720px)",
+                borderRadius: "var(--radius)",
+              }}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <canvas
+                ref={canvasRef}
+                width={Math.min(projectWidth, 960)}
+                height={Math.min(
+                  projectHeight,
+                  Math.round(
+                    960 / Math.max(projectWidth / projectHeight, 0.01),
+                  ),
+                )}
+                className="block h-full w-full bg-black"
+                style={{
+                  cursor:
+                    boardPanMode || boardDragging
+                      ? boardDragging
+                        ? "grabbing"
+                        : "grab"
+                      : cropEditing
+                        ? "crosshair"
+                        : "grab",
+                }}
+                onMouseDown={beginVideoDrag}
+                onContextMenu={(e) => e.preventDefault()}
+              />
+              <VideoSelectionOverlay
+                bound={selectedBound}
+                visible={
+                  !!selectedClipId &&
+                  !cropEditing &&
+                  !boardPanMode &&
+                  !boardDragging
+                }
+              />
+              {!boardPanMode && !boardDragging && (
+                <CropOverlay videoBound={selectedBound} />
+              )}
+              <div className="preview-text-layer">
+                {activeTextClips.map((clip) => {
+                  const text = clip.text || DEFAULT_TEXT();
+                  const selected = clip.id === selectedClipId;
+                  const locked = tracks.find(
+                    (t) => t.index === clip.trackIndex,
+                  )?.locked;
+                  return (
                     <div
-                      className="preview-text-rotate"
-                      onMouseDown={(e) => beginRotate(e, clip)}
-                      title="Rotate"
-                    />
-                  )}
-                  {text.content || "Text"}
-                </div>
-              );
-            })}
+                      key={clip.id}
+                      className={`preview-text-item${selected ? " selected" : ""}${locked ? " locked" : ""}`}
+                      style={{
+                        ...textCss(
+                          text,
+                          frameSize.h || projectHeight,
+                          projectHeight,
+                        ),
+                        pointerEvents:
+                          boardPanMode || boardDragging ? "none" : undefined,
+                      }}
+                      onMouseDown={(e) => {
+                        if (e.button === 2) {
+                          beginBoardPan(e, true);
+                          return;
+                        }
+                        if (boardPanMode) return;
+                        beginMove(e, clip);
+                      }}
+                      onContextMenu={(e) => e.preventDefault()}
+                      onDoubleClick={(e) => {
+                        if (boardPanMode) return;
+                        e.stopPropagation();
+                        selectClip(clip.id);
+                      }}
+                      title={
+                        locked
+                          ? "Track locked — unlock T1 to edit"
+                          : "Drag to move · use top handle to rotate"
+                      }
+                    >
+                      {selected && !locked && !boardPanMode && !boardDragging && (
+                        <div
+                          className="preview-text-rotate"
+                          onMouseDown={(e) => beginRotate(e, clip)}
+                          title="Rotate"
+                        />
+                      )}
+                      {text.content || "Text"}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
+
         {previewError && (
           <div className="absolute bottom-4 left-1/2 max-w-[90%] -translate-x-1/2 rounded bg-black/80 px-3 py-1 text-center text-[11px] text-[var(--danger)]">
             {previewError}
