@@ -54,14 +54,14 @@ NovaBlend Studio Mobile/dist/app-release.apk
 
 (~28 MB, signed with the debug keystore for sideload testing — fine for friends / GitHub Releases, not Play Store.)
 
-Rebuild later (Windows tip: username/SDK paths with spaces break NDK; we used `C:\AndroidSdk` junction + short build path):
+Rebuild **inside this folder only** (do not copy the project outside the repo). If the Android SDK path has spaces, point `android/local.properties` at a short junction such as `C:\AndroidSdk`:
 
 ```bash
 cd "NovaBlend Studio Mobile"
 npx expo prebuild --platform android
-# then from a short path copy if Windows path-length errors appear
 cd android
 gradlew.bat assembleRelease
+# APK → dist/app-release.apk (copy from android/app/build/outputs/apk/release/)
 ```
 
 ### iOS (needs Expo login — cannot finish on Windows alone)
