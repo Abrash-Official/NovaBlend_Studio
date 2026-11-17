@@ -80,3 +80,20 @@ tmp/
 temp/
 *.tmp
 *.bak
+
+# Expo / React Native (NovaBlend Studio Mobile)
+.expo/
+.expo-shared/
+web-build/
+android/
+ios/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*.orig.*
+Expo-*.ipa
+# Keep local mobile APK under dist/ for sideload testing; ignore other APKs/AABs
+*.apk
+!NovaBlend Studio Mobile/dist/*.apk
+*.aab
