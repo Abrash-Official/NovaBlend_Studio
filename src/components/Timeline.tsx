@@ -1,6 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useShallow } from "zustand/react/shallow";
 import { createFreezeClip } from "../lib/api";
 import {
   ASPECT_PRESETS,
@@ -13,6 +14,11 @@ import {
 } from "../types/editor";
 import { useEditorStore } from "../store/editorStore";
 import { snapClipStart, snapPlayhead } from "../lib/snap";
+import {
+  getLivePlayhead,
+  subscribeLivePlayhead,
+} from "../lib/playheadClock";
+import { rulerTicks } from "../lib/timelineRuler";
 import { ClipWaveform } from "./ClipWaveform";
 import { ClipFilmstrip } from "./ClipFilmstrip";
 import {
@@ -158,12 +164,12 @@ function laneTint(base: string, lane: number): string {
 }
 
 export function Timeline() {
+  // useShallow: ignore playhead ticks so Timeline doesn't re-render every frame
   const {
     tracks,
     clips,
     selectedClipId,
     selectClip,
-    playhead,
     setPlayhead,
     zoom,
     setZoom,
@@ -207,7 +213,57 @@ export function Timeline() {
     removeKeyframesAtTime,
     aspect,
     setAspect,
-  } = useEditorStore();
+  } = useEditorStore(
+    useShallow((s) => ({
+      tracks: s.tracks,
+      clips: s.clips,
+      selectedClipId: s.selectedClipId,
+      selectClip: s.selectClip,
+      setPlayhead: s.setPlayhead,
+      zoom: s.zoom,
+      setZoom: s.setZoom,
+      moveClip: s.moveClip,
+      insertTrackRelative: s.insertTrackRelative,
+      pruneEmptyTracks: s.pruneEmptyTracks,
+      updateClip: s.updateClip,
+      timelineDuration: s.timelineDuration,
+      setPlaying: s.setPlaying,
+      setStatus: s.setStatus,
+      splitClipAtPlayhead: s.splitClipAtPlayhead,
+      duplicateClip: s.duplicateClip,
+      toggleClipReverse: s.toggleClipReverse,
+      removeClip: s.removeClip,
+      insertFreezeMediaClip: s.insertFreezeMediaClip,
+      fps: s.fps,
+      bumpProcessing: s.bumpProcessing,
+      updateTrack: s.updateTrack,
+      media: s.media,
+      magnetEnabled: s.magnetEnabled,
+      setMagnetEnabled: s.setMagnetEnabled,
+      pushHistory: s.pushHistory,
+      undo: s.undo,
+      redo: s.redo,
+      past: s.past,
+      future: s.future,
+      timelineTabs: s.timelineTabs,
+      activeTimelineId: s.activeTimelineId,
+      addTimeline: s.addTimeline,
+      switchTimeline: s.switchTimeline,
+      removeSelectedClip: s.removeSelectedClip,
+      applyCropMask: s.applyCropMask,
+      cropEditing: s.cropEditing,
+      setCropEditing: s.setCropEditing,
+      boardPanMode: s.boardPanMode,
+      setBoardPanMode: s.setBoardPanMode,
+      nudgeClipLayer: s.nudgeClipLayer,
+      toggleRemoveBg: s.toggleRemoveBg,
+      addQuickKeyframe: s.addQuickKeyframe,
+      splitSelectedAtPlayhead: s.splitSelectedAtPlayhead,
+      removeKeyframesAtTime: s.removeKeyframesAtTime,
+      aspect: s.aspect,
+      setAspect: s.setAspect,
+    })),
+  );
 
   const duration = timelineDuration();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -218,8 +274,60 @@ export function Timeline() {
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [freezing, setFreezing] = useState(false);
   const [dropTrackIndex, setDropTrackIndex] = useState<number | null>(null);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [viewportWidth, setViewportWidth] = useState(800);
+  const [zoomUi, setZoomUi] = useState(zoom);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
 
-  const widthPx = useMemo(() => Math.max(800, duration * zoom), [duration, zoom]);
+  // Debounce store zoom — slider stays instant, filmstrip/layout catch up
+  useEffect(() => {
+    setZoomUi(zoom);
+  }, [zoom]);
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      if (zoomUi !== useEditorStore.getState().zoom) setZoom(zoomUi);
+    }, 80);
+    return () => clearTimeout(id);
+  }, [zoomUi, setZoom]);
+
+  const widthPx = useMemo(
+    () => Math.max(800, duration * zoom),
+    [duration, zoom],
+  );
+  const ticks = useMemo(() => rulerTicks(duration, zoom), [duration, zoom]);
+  const playheadElRef = useRef<HTMLDivElement>(null);
+
+  // Smooth playhead via DOM only — never rewritten by React style each render
+  useEffect(() => {
+    const apply = (t: number) => {
+      const el = playheadElRef.current;
+      if (!el) return;
+      el.style.transform = `translate3d(${TRACK_HEADER_W + t * zoomRef.current}px, 0, 0)`;
+    };
+    apply(getLivePlayhead());
+    return subscribeLivePlayhead(apply);
+  }, []);
+  useEffect(() => {
+    const el = playheadElRef.current;
+    if (!el) return;
+    el.style.transform = `translate3d(${TRACK_HEADER_W + getLivePlayhead() * zoom}px, 0, 0)`;
+  }, [zoom]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => setScrollLeft(el.scrollLeft);
+    const ro = new ResizeObserver(() => setViewportWidth(el.clientWidth));
+    el.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(el);
+    setScrollLeft(el.scrollLeft);
+    setViewportWidth(el.clientWidth);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    };
+  }, []);
 
   /** CapCut-like stack: text/FX above video, audio below. Always show V/A for layering. */
   const trackLayouts = useMemo(() => {
@@ -758,8 +866,8 @@ export function Timeline() {
               type="range"
               min={24}
               max={160}
-              value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
+              value={zoomUi}
+              onChange={(e) => setZoomUi(Number(e.target.value))}
             />
           </label>
         </div>
@@ -778,13 +886,17 @@ export function Timeline() {
               style={{ width: widthPx }}
               onMouseDown={beginPlayheadScrub}
             >
-              {Array.from({ length: Math.ceil(duration) + 1 }).map((_, i) => (
+              {ticks.map(({ t, major, label }) => (
                 <div
-                  key={i}
-                  className="pointer-events-none absolute top-0 h-full border-l border-[var(--line)] text-[10px] text-[var(--muted)]"
-                  style={{ left: i * zoom }}
+                  key={t}
+                  className={`pointer-events-none absolute top-0 h-full border-l text-[10px] ${
+                    major
+                      ? "border-[var(--line)] text-[var(--muted)]"
+                      : "border-[var(--line)]/40 text-transparent"
+                  }`}
+                  style={{ left: t * zoom }}
                 >
-                  <span className="ml-1">{i}s</span>
+                  {major && <span className="ml-1 whitespace-nowrap">{label}</span>}
                 </div>
               ))}
             </div>
@@ -886,10 +998,10 @@ export function Timeline() {
                   const brightness = 1 + (lane % 3) * 0.08;
                   const mediaItem = media.find((m) => m.id === clip.mediaId);
                   const wavePath =
-                    clip.previewPath ||
                     clip.mediaPath ||
-                    mediaItem?.previewPath ||
                     mediaItem?.path ||
+                    clip.previewPath ||
+                    mediaItem?.previewPath ||
                     "";
                   const filmPath =
                     clip.trackKind === "video" && !isStillClip(clip)
@@ -1005,6 +1117,10 @@ export function Timeline() {
                               height={filmH}
                               inPoint={clip.inPoint}
                               outPoint={clip.outPoint}
+                              zoom={zoom}
+                              clipLeftPx={left + handleW}
+                              scrollLeft={scrollLeft}
+                              viewportWidth={viewportWidth}
                               fallbackThumb={thumb}
                             />
                           )}
@@ -1033,6 +1149,10 @@ export function Timeline() {
                                 outPoint={clip.outPoint}
                                 mediaDuration={mediaDur}
                                 amplitude={clip.effects.volume ?? 1}
+                                clipLeftPx={left + handleW}
+                                scrollLeft={scrollLeft}
+                                viewportWidth={viewportWidth}
+                                zoom={zoom}
                               />
                             </div>
                           )}
@@ -1050,6 +1170,10 @@ export function Timeline() {
                                 outPoint={clip.outPoint}
                                 mediaDuration={mediaDur}
                                 amplitude={clip.effects.volume ?? 1}
+                                clipLeftPx={left + handleW}
+                                scrollLeft={scrollLeft}
+                                viewportWidth={viewportWidth}
+                                zoom={zoom}
                               />
                             </div>
                           )}
@@ -1120,19 +1244,13 @@ export function Timeline() {
                               (t / Math.max(0.05, clip.duration)) * innerW;
                             if (x < 2 || x > innerW - 2) return null;
                             const absT = clip.start + t;
-                            const active =
-                              Math.abs(playhead - absT) <= 0.05;
                             return (
                               <button
                                 key={`kf-${t}`}
                                 type="button"
-                                className={`tl-kf-mark ${active ? "on" : ""}`}
+                                className="tl-kf-mark"
                                 style={{ left: x }}
-                                title={
-                                  active
-                                    ? "Keyframe (active) · Right-click or Del to remove"
-                                    : "Click to jump · Right-click to delete"
-                                }
+                                title="Click to jump · Right-click to delete"
                                 onMouseDown={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
@@ -1176,12 +1294,14 @@ export function Timeline() {
             </div>
           ))}
 
-          {/* CapCut-style draggable playhead */}
+          {/* CapCut-style playhead — transform set only via playheadClock (smooth at any zoom) */}
           <div
+            ref={playheadElRef}
             className="tl-playhead"
             style={{
-              left: TRACK_HEADER_W + playhead * zoom,
+              left: 0,
               height: 24 + tracksBodyHeight,
+              willChange: "transform",
             }}
             onMouseDown={beginPlayheadScrub}
           >
@@ -1191,6 +1311,8 @@ export function Timeline() {
         </div>
       </div>
 
+      {menu &&
+        menuClip &&
       {menu &&
         menuClip &&
         createPortal(

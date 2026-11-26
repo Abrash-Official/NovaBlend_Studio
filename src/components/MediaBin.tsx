@@ -1,4 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { requestCreateProxy } from "../lib/importMediaFiles";
 import { useEditorStore } from "../store/editorStore";
 import { IconTrash } from "./Icons";
 
@@ -36,16 +37,22 @@ export function MediaBin({ embedded = false }: { embedded?: boolean }) {
           </div>
         )}
         {media.map((item) => {
+          const building = item.proxyStatus === "building";
           const busy = item.readyState === "processing";
           const errored = item.readyState === "error";
           const pct = Math.max(0, Math.min(100, item.progressPercent || 0));
           const thumb =
             item.thumbPath || (item.readyState === "ready" ? item.previewPath : "");
+          const canProxy =
+            item.hasVideo &&
+            item.proxyStatus !== "building" &&
+            item.proxyStatus !== "full" &&
+            item.readyState !== "error";
           return (
             <div
               key={item.id}
               className={`flex w-full gap-2 border p-1.5 ${
-                busy
+                building || busy
                   ? "border-[var(--warn)]/40 bg-[var(--warn)]/5"
                   : errored
                     ? "border-[var(--danger)]/40 bg-[var(--danger)]/5"
@@ -54,11 +61,11 @@ export function MediaBin({ embedded = false }: { embedded?: boolean }) {
               style={{ borderRadius: "var(--radius)" }}
             >
               <button
-                className="flex min-w-0 flex-1 gap-2 text-left disabled:cursor-wait"
-                disabled={busy}
+                className="flex min-w-0 flex-1 gap-2 text-left"
+                disabled={errored}
                 onDoubleClick={() => !errored && addClipFromMedia(item.id)}
-                onClick={() => !errored && !busy && addClipFromMedia(item.id)}
-                title={busy ? "Wait until Ready" : "Click to add to timeline"}
+                onClick={() => !errored && addClipFromMedia(item.id)}
+                title="Click to add to timeline"
               >
                 <div
                   className="relative h-12 w-16 shrink-0 overflow-hidden bg-black/40"
@@ -93,7 +100,7 @@ export function MediaBin({ embedded = false }: { embedded?: boolean }) {
                     {item.duration.toFixed(1)}s
                     {item.hasVideo ? ` · ${item.width}×${item.height}` : ""}
                   </div>
-                  {busy ? (
+                  {building || busy ? (
                     <div className="mt-1 space-y-1">
                       <div className="progress-track">
                         <div className="progress-fill" style={{ width: `${Math.max(2, pct)}%` }} />
@@ -113,17 +120,32 @@ export function MediaBin({ embedded = false }: { embedded?: boolean }) {
                   )}
                 </div>
               </button>
-              <button
-                className="btn btn-icon btn-danger h-7 w-7 self-start p-0"
-                title="Remove from Media Bin"
-                disabled={busy}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeMedia(item.id);
-                }}
-              >
-                <IconTrash size={13} />
-              </button>
+              <div className="flex shrink-0 flex-col gap-1">
+                {canProxy && (
+                  <button
+                    type="button"
+                    className="btn h-7 px-1.5 text-[9px]"
+                    title="Create lighter H.264 edit proxy"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void requestCreateProxy(item.id);
+                    }}
+                  >
+                    Proxy
+                  </button>
+                )}
+                <button
+                  className="btn btn-icon btn-danger h-7 w-7 p-0"
+                  title="Remove from Media Bin"
+                  disabled={building}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeMedia(item.id);
+                  }}
+                >
+                  <IconTrash size={13} />
+                </button>
+              </div>
             </div>
           );
         })}

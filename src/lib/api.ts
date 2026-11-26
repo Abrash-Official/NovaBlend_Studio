@@ -13,6 +13,9 @@ export interface MediaProbe {
   duration: number;
   width: number;
   height: number;
+  codedWidth?: number;
+  codedHeight?: number;
+  rotation?: number;
   hasVideo: boolean;
   hasAudio: boolean;
   codec: string;
@@ -224,8 +227,41 @@ export async function createPreviewProxy(path: string) {
   return invoke<string>("create_preview_proxy", { path });
 }
 
+export async function startBackgroundProxy(path: string) {
+  return invoke<string>("start_background_proxy", { path });
+}
+
+export async function resolveMediaUrl(path: string) {
+  return invoke<string>("resolve_media_url", { path });
+}
+
+export async function getWaveformWindow(args: {
+  path: string;
+  startSec: number;
+  durationSec: number;
+  buckets: number;
+}) {
+  return invoke<number[]>("get_waveform_window", {
+    path: args.path,
+    startSec: args.startSec,
+    durationSec: args.durationSec,
+    buckets: args.buckets,
+  });
+}
+
 export async function previewThumbPath(previewPath: string) {
   return invoke<string | null>("preview_thumb_path", { previewPath });
+}
+
+export async function extractFilmFrame(path: string, time: number) {
+  return invoke<string>("extract_film_frame", { path, time });
+}
+
+export interface ProxyReadyEvent {
+  sourcePath: string;
+  previewPath: string;
+  stage: string;
+  message: string;
 }
 
 export interface FreezeResult {

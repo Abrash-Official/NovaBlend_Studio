@@ -1103,10 +1103,11 @@ button {
   cursor: nesw-resize;
 }
 
-/* CapCut-style timeline playhead (draggable) */
+/* CapCut-style timeline playhead (draggable) — left via translate3d */
 .tl-playhead {
   position: absolute;
   top: 0;
+  left: 0;
   z-index: 40;
   width: 12px;
   margin-left: -6px;
@@ -1354,19 +1355,32 @@ button {
   opacity: 0.85;
 }
 .tl-filmstrip-cells {
-  display: flex;
-  height: 100%;
   position: relative;
+  height: 100%;
   z-index: 1;
+  overflow: hidden;
 }
 .tl-filmstrip-cell {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 0;
   height: 100%;
-  background-color: #12202e;
-  background-size: cover;
-  background-position: center;
-  border-right: 1px solid rgba(0, 0, 0, 0.45);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  background: #0d1824;
+  border-right: 1px solid rgba(0, 0, 0, 0.4);
+}
+.tl-filmstrip-cell img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+}
+.tl-filmstrip-cell-ph {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #0d1824, #152536, #0d1824);
+  background-size: 200% 100%;
 }
 .tl-filmstrip {
   position: absolute;
@@ -1386,8 +1400,7 @@ button {
   right: 0;
   bottom: 0;
   height: 42%;
-  display: flex;
-  align-items: flex-end;
+  overflow: hidden;
   background: linear-gradient(
     180deg,
     transparent 0%,
@@ -1399,6 +1412,7 @@ button {
 .tl-wave-fill {
   position: absolute;
   inset: 0;
+  overflow: hidden;
   opacity: 0.95;
   pointer-events: none;
 }

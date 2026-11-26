@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { captureFilmFrame, filmCellCount } from "../lib/filmstrip";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { captureFilmFrame, planFilmstrip } from "../lib/filmstrip";
 
 type Props = {
   path: string;
@@ -7,11 +7,12 @@ type Props = {
   height: number;
   inPoint: number;
   outPoint: number;
-  /** Optional single poster while frames load */
+  zoom: number;
+  clipLeftPx: number;
+  scrollLeft: number;
+  viewportWidth: number;
   fallbackThumb?: string;
 };
-
-const CELL_W = 56;
 
 export function ClipFilmstrip({
   path,
@@ -19,67 +20,98 @@ export function ClipFilmstrip({
   height,
   inPoint,
   outPoint,
+  zoom,
+  clipLeftPx,
+  scrollLeft,
+  viewportWidth,
   fallbackThumb,
 }: Props) {
-  const cells = useMemo(() => filmCellCount(width, CELL_W), [width]);
-  const [frames, setFrames] = useState<(string | null)[]>([]);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(true);
 
-  const times = useMemo(() => {
-    const span = Math.max(0.05, outPoint - inPoint);
-    return Array.from({ length: cells }, (_, i) => {
-      const t = inPoint + ((i + 0.5) / cells) * span;
-      return t;
-    });
-  }, [cells, inPoint, outPoint]);
+  const visiblePx = useMemo(() => {
+    const start = scrollLeft - clipLeftPx;
+    const end = start + Math.max(160, viewportWidth);
+    return { start, end };
+  }, [scrollLeft, clipLeftPx, viewportWidth]);
+
+  const plan = useMemo(
+    () => planFilmstrip(width, zoom, inPoint, outPoint, visiblePx),
+    [width, zoom, inPoint, outPoint, visiblePx],
+  );
+
+  const [frames, setFrames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) setVisible(e.isIntersecting);
+      },
+      { root: null, rootMargin: "100px", threshold: 0 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   useEffect(() => {
     let alive = true;
-    if (!path || width < 12 || height < 8) {
-      setFrames([]);
-      return;
-    }
-    setFrames(Array(times.length).fill(null));
+    if (!path || width < 12 || height < 8 || !visible) return;
+
     void (async () => {
-      const next: (string | null)[] = [];
-      for (let i = 0; i < times.length; i++) {
+      for (let i = 0; i < plan.times.length; i++) {
         if (!alive) return;
-        const url = await captureFilmFrame(path, times[i]);
-        next.push(url);
-        if (alive && (i % 2 === 1 || i === times.length - 1)) {
-          setFrames([...next]);
-        }
+        const t = plan.times[i];
+        const key = t.toFixed(1);
+        const url = await captureFilmFrame(path, t);
+        if (!alive || !url) continue;
+        setFrames((prev) => {
+          if (prev[key] === url) return prev;
+          return { ...prev, [key]: url };
+        });
       }
-      if (alive) setFrames(next);
     })();
+
     return () => {
       alive = false;
     };
-  }, [path, width, height, times]);
+  }, [path, width, height, visible, plan]);
 
   if (!path || width < 12) return null;
 
-  const hasAny = frames.some(Boolean);
+  const hasAny = Object.keys(frames).length > 0;
 
   return (
-    <div className="tl-filmstrip-strip" style={{ height }}>
+    <div ref={hostRef} className="tl-filmstrip-strip" style={{ height, width }}>
       {fallbackThumb && !hasAny && (
         <div
           className="tl-filmstrip-fallback"
           style={{ backgroundImage: `url(${fallbackThumb})` }}
         />
       )}
-      <div className="tl-filmstrip-cells" style={{ width }}>
-        {times.map((_, i) => {
-          const src = frames[i];
+      <div className="tl-filmstrip-cells" style={{ width, height }}>
+        {plan.times.map((t, i) => {
+          const src = frames[t.toFixed(1)];
           return (
             <div
-              key={i}
+              key={`${t.toFixed(1)}-${plan.offsets[i]}`}
               className="tl-filmstrip-cell"
               style={{
-                width: CELL_W,
-                backgroundImage: src ? `url(${src})` : undefined,
+                left: plan.offsets[i],
+                width: plan.cellW,
+                height: "100%",
               }}
-            />
+            >
+              {src ? (
+                <img src={src} alt="" draggable={false} />
+              ) : (
+                <div className="tl-filmstrip-cell-ph" />
+              )}
+            </div>
           );
         })}
       </div>

@@ -1,133 +1,98 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
-/** Bucketed frame cache: path → bucketSec → dataURL */
+/** path → bucket → asset URL */
 const frameCache = new Map<string, Map<number, string>>();
 const inflight = new Map<string, Promise<string | null>>();
 
-/** One shared decoder per media path (serialized) so filmstrip doesn't fight preview. */
-const pathVideos = new Map<string, HTMLVideoElement>();
-const pathQueues = new Map<string, Promise<unknown>>();
+/** CapCut-like media gaps (seconds) while zooming out. */
+const MEDIA_GAPS = [0.5, 1, 2, 4, 8, 16, 30, 60, 120, 300];
 
-function bucketKey(path: string, time: number, bucket = 0.25) {
-  const t = Math.max(0, Math.round(time / bucket) * bucket);
-  return `${path}::${t.toFixed(2)}`;
-}
+export type FilmPlan = {
+  times: number[];
+  cellW: number;
+  offsets: number[];
+};
 
-function loadVideo(src: string): Promise<HTMLVideoElement> {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement("video");
-    video.preload = "auto";
-    video.muted = true;
-    video.playsInline = true;
-    video.crossOrigin = "anonymous";
-    const onErr = () => {
-      cleanup();
-      reject(new Error("video load failed"));
-    };
-    const onReady = () => {
-      cleanup();
-      resolve(video);
-    };
-    const cleanup = () => {
-      video.removeEventListener("loadeddata", onReady);
-      video.removeEventListener("error", onErr);
-    };
-    video.addEventListener("loadeddata", onReady);
-    video.addEventListener("error", onErr);
-    video.src = src;
-  });
-}
+/**
+ * CapCut filmstrip: each cell has a FIXED pixel width (gap × zoom), never stretched
+ * across the whole clip. Only cells intersecting the viewport are returned.
+ */
+export function planFilmstrip(
+  widthPx: number,
+  zoomPxPerSec: number,
+  inPoint: number,
+  outPoint: number,
+  visiblePx?: { start: number; end: number },
+): FilmPlan {
+  const span = Math.max(0.05, outPoint - inPoint);
+  const z = Math.max(0.05, zoomPxPerSec);
+  const minCellPx = 48;
 
-function seek(video: HTMLVideoElement, time: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const target = Math.max(
-      0,
-      Math.min(time, Math.max(0, (video.duration || time) - 0.04)),
-    );
-    if (Math.abs(video.currentTime - target) < 0.04 && video.readyState >= 2) {
-      resolve();
-      return;
+  let gap = MEDIA_GAPS[MEDIA_GAPS.length - 1];
+  for (const g of MEDIA_GAPS) {
+    if (g * z >= minCellPx) {
+      gap = g;
+      break;
     }
-    const onSeeked = () => {
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("error", onErr);
-      resolve();
-    };
-    const onErr = () => {
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("error", onErr);
-      reject(new Error("seek failed"));
-    };
-    video.addEventListener("seeked", onSeeked);
-    video.addEventListener("error", onErr);
-    try {
-      video.currentTime = target;
-    } catch {
-      onErr();
-    }
-  });
-}
-
-async function videoForPath(path: string): Promise<HTMLVideoElement> {
-  const existing = pathVideos.get(path);
-  if (existing && existing.dataset.src && existing.readyState >= 1) {
-    return existing;
   }
-  const src = convertFileSrc(path);
-  const video = await loadVideo(src);
-  video.dataset.src = src;
-  pathVideos.set(path, video);
-  return video;
+
+  // Natural CapCut cell width = seconds × px/sec (readable thumbs, no smear)
+  const cellW = Math.max(minCellPx, gap * z);
+  const totalCells = Math.max(1, Math.ceil(span / gap));
+
+  const v0 = visiblePx ? visiblePx.start - cellW : 0;
+  const v1 = visiblePx
+    ? visiblePx.end + cellW
+    : Math.min(widthPx, cellW * 48);
+
+  const times: number[] = [];
+  const offsets: number[] = [];
+  const maxVisible = 48;
+
+  for (let i = 0; i < totalCells; i++) {
+    const x0 = i * cellW;
+    if (x0 > widthPx) break;
+    if (x0 + cellW < v0 || x0 > v1) continue;
+    times.push(inPoint + Math.min(span - 0.01, (i + 0.5) * gap));
+    offsets.push(x0);
+    if (times.length >= maxVisible) break;
+  }
+
+  if (!times.length && totalCells > 0) {
+    const mid = visiblePx
+      ? (visiblePx.start + visiblePx.end) / 2
+      : cellW / 2;
+    const i = Math.min(totalCells - 1, Math.max(0, Math.floor(mid / cellW)));
+    times.push(inPoint + Math.min(span - 0.01, (i + 0.5) * gap));
+    offsets.push(i * cellW);
+  }
+
+  return { times, cellW, offsets };
 }
 
-function enqueuePath<T>(path: string, job: () => Promise<T>): Promise<T> {
-  const prev = pathQueues.get(path) ?? Promise.resolve();
-  const next = prev.then(job, job);
-  pathQueues.set(
-    path,
-    next.then(
-      () => undefined,
-      () => undefined,
-    ),
-  );
-  return next;
-}
-
-/** Capture one frame as a data URL (cached). */
+/** FFmpeg JPEG film frame (HEVC-safe). */
 export async function captureFilmFrame(
   path: string,
   time: number,
 ): Promise<string | null> {
   if (!path) return null;
+  const bucket = Math.round(time * 2) / 2;
   const pathCache = frameCache.get(path) ?? new Map<number, string>();
   if (!frameCache.has(path)) frameCache.set(path, pathCache);
-  const bucket = Math.round(time / 0.25) * 0.25;
   const hit = pathCache.get(bucket);
   if (hit) return hit;
 
-  const key = bucketKey(path, time);
-  const existing = inflight.get(key);
-  if (existing) return existing;
+  const key = `${path}::${bucket.toFixed(1)}`;
+  const pending = inflight.get(key);
+  if (pending) return pending;
 
-  const job = enqueuePath(path, async () => {
+  const job = (async () => {
     try {
-      const cached = pathCache.get(bucket);
-      if (cached) return cached;
-      const video = await videoForPath(path);
-      await seek(video, bucket);
-      const w = Math.max(1, video.videoWidth || 160);
-      const h = Math.max(1, video.videoHeight || 90);
-      const maxW = 120;
-      const scale = Math.min(1, maxW / w);
-      const cw = Math.max(1, Math.round(w * scale));
-      const ch = Math.max(1, Math.round(h * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = cw;
-      canvas.height = ch;
-      const ctx = canvas.getContext("2d");
-      if (!ctx || !video.videoWidth) return null;
-      ctx.drawImage(video, 0, 0, cw, ch);
-      const url = canvas.toDataURL("image/jpeg", 0.72);
+      const file = await invoke<string>("extract_film_frame", {
+        path,
+        time: bucket,
+      });
+      const url = convertFileSrc(file);
       pathCache.set(bucket, url);
       return url;
     } catch {
@@ -135,12 +100,12 @@ export async function captureFilmFrame(
     } finally {
       inflight.delete(key);
     }
-  });
+  })();
 
   inflight.set(key, job);
   return job;
 }
 
 export function filmCellCount(widthPx: number, cellW = 56): number {
-  return Math.max(1, Math.ceil(widthPx / cellW));
+  return Math.max(1, Math.min(48, Math.ceil(widthPx / cellW)));
 }

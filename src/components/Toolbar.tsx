@@ -48,7 +48,7 @@ export function Toolbar() {
   }, [menuOpen]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const offs: Array<() => void> = [];
     void listen<PreviewProgressEvent>("preview-progress", (event) => {
       const { sourcePath, percent, etaSeconds, message } = event.payload;
       const media = useEditorStore.getState().media.find((m) => m.path === sourcePath);
@@ -57,13 +57,42 @@ export function Toolbar() {
         progressPercent: percent,
         progressEtaSeconds: etaSeconds,
         statusMessage: message,
+        proxyStatus: media.proxyStatus === "native" ? "native" : "building",
       });
-      setStatus(`Processing “${media.name}”: ${message}`);
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    }).then((fn) => offs.push(fn));
+
+    void listen<{
+      sourcePath: string;
+      previewPath: string;
+      stage: string;
+      message: string;
+    }>("proxy-ready", (event) => {
+      const { sourcePath, previewPath, stage, message } = event.payload;
+      const state = useEditorStore.getState();
+      const media = state.media.find((m) => m.path === sourcePath);
+      if (!media) return;
+      const proxyStatus =
+        stage === "full" ? "full" : stage === "head" ? "head" : stage === "native" ? "native" : "building";
+      updateMedia(media.id, {
+        previewPath,
+        proxyStatus,
+        statusMessage: message,
+        progressPercent: stage === "full" || stage === "native" ? 100 : 40,
+        readyState: "ready",
+      });
+      // Hot-swap timeline clips without moving playhead
+      useEditorStore.setState((s) => ({
+        clips: s.clips.map((c) =>
+          c.mediaId === media.id || c.mediaPath === sourcePath
+            ? { ...c, previewPath }
+            : c,
+        ),
+      }));
+      setStatus(`${media.name}: ${message}`);
+    }).then((fn) => offs.push(fn));
+
     return () => {
-      unlisten?.();
+      offs.forEach((fn) => fn());
     };
   }, [setStatus, updateMedia]);
 

@@ -1,4 +1,5 @@
 mod ffmpeg_engine;
+mod media_server;
 
 use ffmpeg_engine::{ExportRequest, FfmpegResult, FreezeResult, MediaProbe};
 use tauri::AppHandle;
@@ -18,8 +19,30 @@ async fn create_preview_proxy(app: AppHandle, path: String) -> Result<String, St
 }
 
 #[tauri::command]
+async fn start_background_proxy(app: AppHandle, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_engine::start_background_proxy(&app, &path)
+    })
+    .await
+    .map_err(|e| format!("background proxy task failed: {e}"))?
+}
+
+#[tauri::command]
 fn preview_thumb_path(preview_path: String) -> Option<String> {
     ffmpeg_engine::preview_thumb_path(&preview_path)
+}
+
+#[tauri::command]
+async fn extract_film_frame(
+    app: AppHandle,
+    path: String,
+    time: f64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_engine::extract_film_frame(&app, &path, time)
+    })
+    .await
+    .map_err(|e| format!("film frame task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -30,6 +53,31 @@ fn get_projects_dir() -> Result<String, String> {
 #[tauri::command]
 fn get_app_workdir() -> Result<String, String> {
     ffmpeg_engine::exe_workdir().map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_media_server_url() -> Result<String, String> {
+    media_server::base_url()
+}
+
+#[tauri::command]
+fn resolve_media_url(path: String) -> Result<String, String> {
+    media_server::resolve_url(&path)
+}
+
+#[tauri::command]
+async fn get_waveform_window(
+    app: AppHandle,
+    path: String,
+    start_sec: f64,
+    duration_sec: f64,
+    buckets: usize,
+) -> Result<Vec<f32>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_engine::get_waveform_window(&app, &path, start_sec, duration_sec, buckets)
+    })
+    .await
+    .map_err(|e| format!("waveform task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -101,12 +149,21 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .setup(|_app| {
+            media_server::start()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             probe_media,
             create_preview_proxy,
+            start_background_proxy,
             preview_thumb_path,
+            extract_film_frame,
             get_projects_dir,
             get_app_workdir,
+            get_media_server_url,
+            resolve_media_url,
+            get_waveform_window,
             export_timeline,
             extract_audio,
             split_hint,

@@ -262,12 +262,30 @@ pub struct ExportRequest {
 pub struct MediaProbe {
     pub path: String,
     pub duration: f64,
+    /// Upright display width (swap applied when rotation is ±90/270).
     pub width: u32,
+    /// Upright display height.
     pub height: u32,
+    #[serde(default)]
+    pub coded_width: u32,
+    #[serde(default)]
+    pub coded_height: u32,
+    /// Display-matrix / rotate tag degrees: 0, 90, -90, 180, 270.
+    #[serde(default)]
+    pub rotation: i32,
     pub has_video: bool,
     pub has_audio: bool,
     pub codec: String,
     pub fps: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyReadyEvent {
+    pub source_path: String,
+    pub preview_path: String,
+    pub stage: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,10 +363,66 @@ pub fn probe_media(app: &AppHandle, path: &str) -> Result<MediaProbe, String> {
     parse_probe(path, &stderr)
 }
 
+fn parse_rotation_line(line: &str) -> Option<i32> {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("rotation of") {
+        let after = lower.split("rotation of").nth(1)?;
+        let tok = after
+            .split_whitespace()
+            .next()?
+            .trim_matches(|c: char| !c.is_ascii_digit() && c != '-' && c != '.');
+        let v: f64 = tok.parse().ok()?;
+        return Some(v.round() as i32);
+    }
+    if lower.contains("rotate") && (lower.contains(':') || lower.contains('=')) {
+        // e.g. "rotate          : -90" or "TAG:rotate=-90"
+        for part in lower.split([':', '=']) {
+            let t = part.trim().trim_matches(|c: char| {
+                !c.is_ascii_digit() && c != '-' && c != '.'
+            });
+            if t.is_empty() || t == "rotate" {
+                continue;
+            }
+            if let Ok(v) = t.parse::<f64>() {
+                if v.abs() <= 360.0 {
+                    return Some(v.round() as i32);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn normalize_rotation(deg: i32) -> i32 {
+    let mut r = deg % 360;
+    if r > 180 {
+        r -= 360;
+    }
+    if r < -180 {
+        r += 360;
+    }
+    // Snap near-misses to cardinal angles
+    for cand in [0, 90, -90, 180, -180, 270, -270] {
+        if (r - cand).abs() <= 1 {
+            return if cand == 270 {
+                -90
+            } else if cand == -270 {
+                90
+            } else if cand == -180 {
+                180
+            } else {
+                cand
+            };
+        }
+    }
+    r
+}
+
 fn parse_probe(path: &str, stderr: &str) -> Result<MediaProbe, String> {
     let mut duration = 0.0_f64;
-    let mut width = 0_u32;
-    let mut height = 0_u32;
+    let mut coded_width = 0_u32;
+    let mut coded_height = 0_u32;
+    let mut rotation = 0_i32;
     let mut has_video = false;
     let mut has_audio = false;
     let mut codec = String::from("unknown");
@@ -361,6 +435,9 @@ fn parse_probe(path: &str, stderr: &str) -> Result<MediaProbe, String> {
                 duration = parse_timecode(time);
             }
         }
+        if let Some(r) = parse_rotation_line(line) {
+            rotation = normalize_rotation(r);
+        }
         if line.contains("Video:") {
             has_video = true;
             if let Some(after) = line.split("Video:").nth(1) {
@@ -370,7 +447,6 @@ fn parse_probe(path: &str, stderr: &str) -> Result<MediaProbe, String> {
                     .unwrap_or("unknown")
                     .trim()
                     .to_string();
-                // resolution like 1920x1080
                 for token in after.split(',') {
                     let t = token.trim();
                     if let Some((w, h)) = t.split_once('x') {
@@ -382,8 +458,8 @@ fn parse_probe(path: &str, stderr: &str) -> Result<MediaProbe, String> {
                                 .parse::<u32>(),
                         ) {
                             if ww > 0 && hh > 0 {
-                                width = ww;
-                                height = hh;
+                                coded_width = ww;
+                                coded_height = hh;
                             }
                         }
                     }
@@ -406,11 +482,21 @@ fn parse_probe(path: &str, stderr: &str) -> Result<MediaProbe, String> {
         return Err(format!("Could not probe media: {path}\n{stderr}"));
     }
 
+    let swap = matches!(rotation.abs(), 90 | 270);
+    let (width, height) = if swap {
+        (coded_height, coded_width)
+    } else {
+        (coded_width, coded_height)
+    };
+
     Ok(MediaProbe {
         path: path.to_string(),
         duration,
         width,
         height,
+        coded_width,
+        coded_height,
+        rotation,
         has_video,
         has_audio,
         codec,
@@ -1565,27 +1651,7 @@ fn run_ffmpeg_with_progress(
     Ok(())
 }
 
-/// Build an H.264 preview proxy so WebView2 can play codecs like HEVC.
-/// Proxies live next to the .exe under `proxies/`.
-pub fn create_preview_proxy(app: &AppHandle, path: &str) -> Result<String, String> {
-    let probe = probe_media(app, path)?;
-    if !probe.has_video {
-        return Ok(path.to_string());
-    }
-
-    let codec = probe.codec.to_lowercase();
-    let browser_friendly = codec.contains("h264")
-        || codec.contains("avc")
-        || codec.contains("vp8")
-        || codec.contains("vp9")
-        || codec.contains("av01")
-        || codec.contains("av1");
-
-    if browser_friendly {
-        emit_progress(app, path, 100.0, 0.0, "Ready");
-        return Ok(path.to_string());
-    }
-
+fn proxy_token(path: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -1598,37 +1664,183 @@ pub fn create_preview_proxy(app: &AppHandle, path: &str) -> Result<String, Strin
             }
         }
     }
-    let token = format!("{:x}", hasher.finish());
+    format!("{:x}", hasher.finish())
+}
 
-    let dir = proxies_dir()?;
-    let out = dir.join(format!("{token}_preview.mp4"));
-    let thumb = dir.join(format!("{token}_thumb.jpg"));
-    if out.exists() && out.metadata().map(|m| m.len() > 1024).unwrap_or(false) {
-        emit_progress(app, path, 100.0, 0.0, "Ready (cached)");
-        return Ok(out.to_string_lossy().to_string());
+fn is_browser_friendly_codec(codec: &str) -> bool {
+    let c = codec.to_lowercase();
+    c.contains("h264")
+        || c.contains("avc")
+        || c.contains("vp8")
+        || c.contains("vp9")
+        || c.contains("av01")
+        || c.contains("av1")
+}
+
+/// Cached hardware H.264 encoder pick (nvenc → qsv → amf → mf → libx264).
+fn selected_h264_encoder(ffmpeg: &Path) -> &'static str {
+    use std::sync::OnceLock;
+    static ENC: OnceLock<String> = OnceLock::new();
+    ENC.get_or_init(|| {
+        let candidates: &[(&str, &[&str])] = &[
+            (
+                "h264_nvenc",
+                &[
+                    "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.2",
+                    "-frames:v", "2", "-c:v", "h264_nvenc", "-preset", "p1",
+                    "-rc", "constqp", "-qp", "28", "-f", "null", "-",
+                ],
+            ),
+            (
+                "h264_qsv",
+                &[
+                    "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.2",
+                    "-frames:v", "2", "-c:v", "h264_qsv", "-preset", "veryfast",
+                    "-global_quality", "28", "-f", "null", "-",
+                ],
+            ),
+            (
+                "h264_amf",
+                &[
+                    "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.2",
+                    "-frames:v", "2", "-c:v", "h264_amf", "-quality", "speed",
+                    "-rc", "cqp", "-qp_i", "28", "-qp_p", "28", "-f", "null", "-",
+                ],
+            ),
+            (
+                "h264_mf",
+                &[
+                    "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.2",
+                    "-frames:v", "2", "-c:v", "h264_mf", "-f", "null", "-",
+                ],
+            ),
+        ];
+        for (name, args) in candidates {
+            let ok = Command::new(ffmpeg)
+                .args(*args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                eprintln!("[NovaBlend] preview encoder: {name}");
+                return (*name).to_string();
+            }
+        }
+        eprintln!("[NovaBlend] preview encoder: libx264 (CPU fallback)");
+        "libx264".to_string()
+    })
+    .as_str()
+}
+
+fn encoder_video_args(encoder: &str) -> Vec<String> {
+    match encoder {
+        "h264_nvenc" => vec![
+            "-c:v".into(), "h264_nvenc".into(),
+            "-preset".into(), "p1".into(),
+            "-rc".into(), "constqp".into(),
+            "-qp".into(), "28".into(),
+        ],
+        "h264_qsv" => vec![
+            "-c:v".into(), "h264_qsv".into(),
+            "-preset".into(), "veryfast".into(),
+            "-global_quality".into(), "28".into(),
+        ],
+        "h264_amf" => vec![
+            "-c:v".into(), "h264_amf".into(),
+            "-quality".into(), "speed".into(),
+            "-rc".into(), "cqp".into(),
+            "-qp_i".into(), "28".into(),
+            "-qp_p".into(), "28".into(),
+        ],
+        "h264_mf" => vec!["-c:v".into(), "h264_mf".into()],
+        _ => vec![
+            "-c:v".into(), "libx264".into(),
+            "-preset".into(), "ultrafast".into(),
+            "-crf".into(), "28".into(),
+        ],
     }
+}
 
-    let ffmpeg = resolve_ffmpeg_path(app)?;
+/// Bake display-matrix into pixels. Empirically phone "rotation of -90" → transpose=1.
+fn orientation_vf(rotation: i32, max_short_edge: i32) -> String {
+    let r = normalize_rotation(rotation);
+    let transpose = match r {
+        -90 | 270 => "transpose=1,",
+        90 | -270 => "transpose=2,",
+        180 | -180 => "transpose=1,transpose=1,",
+        _ => "",
+    };
+    format!(
+        "{transpose}scale='if(gt(iw,ih),-2,min({max_short_edge}\\,iw))':'if(gt(iw,ih),min({max_short_edge}\\,ih),-2)':flags=fast_bilinear,format=yuv420p,setsar=1"
+    )
+}
+
+fn emit_proxy_ready(app: &AppHandle, source: &str, preview: &str, stage: &str, message: &str) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "proxy-ready",
+        ProxyReadyEvent {
+            source_path: source.to_string(),
+            preview_path: preview.to_string(),
+            stage: stage.to_string(),
+            message: message.to_string(),
+        },
+    );
+}
+
+fn set_below_normal_priority(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+    }
+    let _ = cmd;
+}
+
+fn encode_proxy_window(
+    app: &AppHandle,
+    ffmpeg: &Path,
+    path: &str,
+    out: &Path,
+    start: f64,
+    duration: f64,
+    rotation: i32,
+    low_priority: bool,
+    label: &str,
+) -> Result<(), String> {
+    let encoder = selected_h264_encoder(ffmpeg);
     let out_str = out.to_string_lossy().to_string();
-    emit_progress(app, path, 1.0, probe.duration, "Starting preview encode…");
+    let vf = orientation_vf(rotation, 540);
+    emit_progress(app, path, 1.0, duration, label);
 
-    let nvenc_args = vec![
+    let mut args: Vec<String> = vec![
         "-y".into(),
         "-hide_banner".into(),
-        "-hwaccel".into(),
-        "auto".into(),
+        "-fflags".into(),
+        "+fastseek".into(),
+        "-noautorotate".into(),
+        "-ss".into(),
+        format!("{start:.3}"),
+        "-t".into(),
+        format!("{duration:.3}"),
         "-i".into(),
         path.to_string(),
+        "-r".into(),
+        "30".into(),
+        "-g".into(),
+        "30".into(),
         "-vf".into(),
-        "scale=-2:540".into(),
-        "-c:v".into(),
-        "h264_nvenc".into(),
-        "-preset".into(),
-        "p1".into(),
-        "-rc".into(),
-        "constqp".into(),
-        "-qp".into(),
-        "28".into(),
+        vf,
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-metadata:s:v:0".into(),
+        "rotate=0".into(),
+    ];
+    args.extend(encoder_video_args(encoder));
+    args.extend([
         "-c:a".into(),
         "aac".into(),
         "-b:a".into(),
@@ -1637,53 +1849,87 @@ pub fn create_preview_proxy(app: &AppHandle, path: &str) -> Result<String, Strin
         "2".into(),
         "-movflags".into(),
         "+faststart".into(),
-        out_str.clone(),
-    ];
+        out_str,
+    ]);
 
-    if let Err(nvenc_err) =
-        run_ffmpeg_with_progress(app, &ffmpeg, nvenc_args, path, probe.duration.max(0.1))
-    {
-        let _ = std::fs::remove_file(&out);
-        emit_progress(app, path, 2.0, probe.duration, "NVENC failed, trying CPU…");
-        let cpu_args = vec![
-            "-y".into(),
-            "-hide_banner".into(),
-            "-i".into(),
-            path.to_string(),
-            "-vf".into(),
-            "scale=-2:540".into(),
-            "-c:v".into(),
-            "libx264".into(),
-            "-preset".into(),
-            "ultrafast".into(),
-            "-crf".into(),
-            "28".into(),
-            "-c:a".into(),
-            "aac".into(),
-            "-b:a".into(),
-            "96k".into(),
-            "-ac".into(),
-            "2".into(),
-            "-movflags".into(),
-            "+faststart".into(),
-            out_str.clone(),
-        ];
-        if let Err(cpu_err) =
-            run_ffmpeg_with_progress(app, &ffmpeg, cpu_args, path, probe.duration.max(0.1))
-        {
-            let _ = std::fs::remove_file(&out);
-            return Err(format!("Preview proxy failed:\n{cpu_err}\n(NVENC: {nvenc_err})"));
+    if low_priority {
+        // Custom spawn with below-normal priority
+        use std::io::{BufRead, BufReader};
+        use std::time::Instant;
+        let mut prog_args = args.clone();
+        prog_args.push("-progress".into());
+        prog_args.push("pipe:1".into());
+        prog_args.push("-nostats".into());
+        let mut cmd = Command::new(ffmpeg);
+        cmd.args(&prog_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        set_below_normal_priority(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| format!("proxy spawn: {e}"))?;
+        let stdout = child.stdout.take().ok_or("ffmpeg stdout missing")?;
+        let mut stderr_pipe = child.stderr.take();
+        let started = Instant::now();
+        let mut last_emit = Instant::now();
+        let mut out_time_us = 0.0_f64;
+        for line in BufReader::new(stdout).lines().flatten() {
+            if let Some(v) = line.strip_prefix("out_time_ms=") {
+                if let Ok(us) = v.trim().parse::<f64>() {
+                    out_time_us = us;
+                }
+            } else if line.starts_with("progress=")
+                && duration > 0.05
+                && last_emit.elapsed().as_millis() > 400
+            {
+                let done = (out_time_us / 1_000_000.0).max(0.0).min(duration);
+                let percent = ((done / duration) * 100.0).clamp(0.0, 99.0);
+                let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                let rate = done / elapsed;
+                let remaining = if rate > 0.05 {
+                    ((duration - done) / rate).max(0.0)
+                } else {
+                    0.0
+                };
+                emit_progress(
+                    app,
+                    path,
+                    percent,
+                    remaining,
+                    &format!("{percent:.1}% · proxy"),
+                );
+                last_emit = Instant::now();
+            }
         }
+        let status = child.wait().map_err(|e| format!("proxy wait: {e}"))?;
+        if !status.success() {
+            let mut err = String::new();
+            if let Some(ref mut s) = stderr_pipe {
+                let _ = std::io::Read::read_to_string(s, &mut err);
+            }
+            let _ = std::fs::remove_file(out);
+            return Err(if err.trim().is_empty() {
+                "proxy encode failed".into()
+            } else {
+                err
+            });
+        }
+        Ok(())
+    } else {
+        run_ffmpeg_with_progress(app, ffmpeg, args, path, duration.max(0.1)).map_err(|e| {
+            let _ = std::fs::remove_file(out);
+            e
+        })
     }
+}
 
-    let _ = Command::new(&ffmpeg)
+fn write_proxy_thumb(ffmpeg: &Path, proxy: &str, thumb: &Path) {
+    let _ = Command::new(ffmpeg)
         .args([
             "-y",
             "-hide_banner",
             "-ss",
-            "0.5",
+            "0.4",
             "-i",
-            &out_str,
+            proxy,
             "-frames:v",
             "1",
             "-q:v",
@@ -1693,23 +1939,333 @@ pub fn create_preview_proxy(app: &AppHandle, path: &str) -> Result<String, Strin
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
 
-    emit_progress(app, path, 100.0, 0.0, "Ready");
-    Ok(out_str)
+/// Fast path / manual: H.264 untouched; HEVC builds (or returns) a proxy.
+/// Prefer `start_background_proxy` for long phone HEVC (head then full).
+pub fn create_preview_proxy(app: &AppHandle, path: &str) -> Result<String, String> {
+    let probe = probe_media(app, path)?;
+    if !probe.has_video {
+        return Ok(path.to_string());
+    }
+    if is_browser_friendly_codec(&probe.codec) {
+        emit_progress(app, path, 100.0, 0.0, "Ready");
+        return Ok(path.to_string());
+    }
+
+    let token = proxy_token(path);
+    let dir = proxies_dir()?;
+    let full = dir.join(format!("{token}_preview.mp4"));
+    let head = dir.join(format!("{token}_head.mp4"));
+    let full_str = full.to_string_lossy().to_string();
+    let head_str = head.to_string_lossy().to_string();
+
+    if full.exists() && full.metadata().map(|m| m.len() > 64_000).unwrap_or(false) {
+        emit_progress(app, path, 100.0, 0.0, "Ready (cached)");
+        return Ok(full_str);
+    }
+    if head.exists() && head.metadata().map(|m| m.len() > 24_000).unwrap_or(false) {
+        emit_progress(app, path, 100.0, 0.0, "Ready · edit head");
+        return Ok(head_str);
+    }
+
+    let ffmpeg = resolve_ffmpeg_path(app)?;
+    let head_dur = probe.duration.min(60.0).max(4.0);
+    encode_proxy_window(
+        app,
+        &ffmpeg,
+        path,
+        &head,
+        0.0,
+        head_dur,
+        probe.rotation,
+        false,
+        &format!("Edit head 0–{head_dur:.0}s…"),
+    )?;
+    write_proxy_thumb(&ffmpeg, &head_str, &dir.join(format!("{token}_thumb.jpg")));
+    emit_progress(app, path, 100.0, 0.0, "Ready · edit head");
+    emit_proxy_ready(app, path, &head_str, "head", "Edit head ready");
+    Ok(head_str)
+}
+
+/// Stage A (≤60s head) then Stage B (full, low-priority). Emits `proxy-ready`.
+pub fn start_background_proxy(app: &AppHandle, path: &str) -> Result<String, String> {
+    let probe = probe_media(app, path)?;
+    if !probe.has_video || is_browser_friendly_codec(&probe.codec) {
+        emit_progress(app, path, 100.0, 0.0, "Ready");
+        emit_proxy_ready(app, path, path, "native", "Using original");
+        return Ok(path.to_string());
+    }
+
+    let token = proxy_token(path);
+    let dir = proxies_dir()?;
+    let full = dir.join(format!("{token}_preview.mp4"));
+    let head = dir.join(format!("{token}_head.mp4"));
+    let full_str = full.to_string_lossy().to_string();
+    let head_str = head.to_string_lossy().to_string();
+    let thumb = dir.join(format!("{token}_thumb.jpg"));
+
+    if full.exists() && full.metadata().map(|m| m.len() > 64_000).unwrap_or(false) {
+        emit_progress(app, path, 100.0, 0.0, "Ready (cached)");
+        emit_proxy_ready(app, path, &full_str, "full", "Cached full proxy");
+        return Ok(full_str);
+    }
+
+    let ffmpeg = resolve_ffmpeg_path(app)?;
+    let head_dur = probe.duration.min(60.0).max(4.0);
+
+    if !(head.exists() && head.metadata().map(|m| m.len() > 24_000).unwrap_or(false)) {
+        encode_proxy_window(
+            app,
+            &ffmpeg,
+            path,
+            &head,
+            0.0,
+            head_dur,
+            probe.rotation,
+            false,
+            &format!("Edit head 0–{head_dur:.0}s…"),
+        )?;
+        write_proxy_thumb(&ffmpeg, &head_str, &thumb);
+    }
+    emit_progress(app, path, 35.0, probe.duration, "Edit head ready — full proxy…");
+    emit_proxy_ready(app, path, &head_str, "head", "Edit head ready");
+
+    // Stage B: full proxy at low priority (may take a while; UI already editable)
+    if probe.duration > head_dur + 1.0 {
+        encode_proxy_window(
+            app,
+            &ffmpeg,
+            path,
+            &full,
+            0.0,
+            probe.duration,
+            probe.rotation,
+            true,
+            "Full edit proxy…",
+        )?;
+        write_proxy_thumb(&ffmpeg, &full_str, &thumb);
+        emit_progress(app, path, 100.0, 0.0, "Ready · full proxy");
+        emit_proxy_ready(app, path, &full_str, "full", "Full proxy ready");
+        Ok(full_str)
+    } else {
+        let _ = std::fs::copy(&head, &full);
+        emit_progress(app, path, 100.0, 0.0, "Ready · edit proxy");
+        emit_proxy_ready(app, path, &head_str, "full", "Proxy ready");
+        Ok(head_str)
+    }
 }
 
 pub fn preview_thumb_path(preview_path: &str) -> Option<String> {
     let name = Path::new(preview_path).file_stem()?.to_string_lossy();
-    if !name.ends_with("_preview") {
-        return None;
-    }
-    let token = name.trim_end_matches("_preview");
+    let token = name
+        .strip_suffix("_preview")
+        .or_else(|| name.strip_suffix("_head"))?;
     let thumb = proxies_dir().ok()?.join(format!("{token}_thumb.jpg"));
     if thumb.exists() {
         Some(thumb.to_string_lossy().to_string())
     } else {
         None
     }
+}
+
+fn film_token(path: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    format!("{:x}", h.finish())
+}
+
+static FILM_SLOTS: std::sync::Mutex<u32> = std::sync::Mutex::new(2);
+
+/// Extract one filmstrip JPEG via FFmpeg (works for HEVC; HTMLVideo often blacks out).
+pub fn extract_film_frame(app: &AppHandle, path: &str, time: f64) -> Result<String, String> {
+    let bucket = (time.max(0.0) * 2.0).floor() / 2.0; // 0.5s buckets
+    let out = proxies_dir()?.join(format!("{}_f_{bucket:.1}.jpg", film_token(path)));
+    if out.exists() && out.metadata().map(|m| m.len() > 200).unwrap_or(false) {
+        return Ok(out.to_string_lossy().to_string());
+    }
+
+    loop {
+        {
+            let mut n = FILM_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+            if *n > 0 {
+                *n -= 1;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    let result = (|| {
+        let ffmpeg = resolve_ffmpeg_path(app)?;
+        let ss = format!("{:.3}", time.max(0.0));
+        let out_str = out.to_string_lossy().to_string();
+        // autorotate so phone HEVC thumbs are upright and readable on the strip
+        let status = Command::new(&ffmpeg)
+            .args([
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                &ss,
+                "-i",
+                path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=180:-2",
+                "-q:v",
+                "4",
+                &out_str,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("film frame ffmpeg: {e}"))?;
+        if !status.success() || !out.exists() {
+            return Err("Could not extract film frame".into());
+        }
+        Ok(out_str)
+    })();
+
+    let mut n = FILM_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    *n += 1;
+    result
+}
+
+fn waveforms_dir() -> Result<PathBuf, String> {
+    let dir = exe_workdir()?.join("waveforms");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("waveforms dir: {e}"))?;
+    Ok(dir)
+}
+
+fn wave_cache_key(path: &str, start: f64, duration: f64, buckets: usize) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    if let Ok(m) = std::fs::metadata(path) {
+        m.len().hash(&mut h);
+        if let Ok(t) = m.modified() {
+            if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+                d.as_secs().hash(&mut h);
+            }
+        }
+    }
+    ((start * 100.0) as i64).hash(&mut h);
+    ((duration * 100.0) as i64).hash(&mut h);
+    buckets.hash(&mut h);
+    format!("{:x}", h.finish())
+}
+
+static WAVE_SLOTS: std::sync::Mutex<u32> = std::sync::Mutex::new(2);
+
+fn with_wave_slot<R>(f: impl FnOnce() -> R) -> R {
+    loop {
+        {
+            let mut n = WAVE_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+            if *n > 0 {
+                *n -= 1;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    let result = f();
+    let mut n = WAVE_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    *n += 1;
+    result
+}
+
+/// CapCut-style windowed peaks — never loads the whole media file into memory.
+pub fn get_waveform_window(
+    app: &AppHandle,
+    path: &str,
+    start_sec: f64,
+    duration_sec: f64,
+    buckets: usize,
+) -> Result<Vec<f32>, String> {
+    let buckets = buckets.clamp(8, 512);
+    let start = start_sec.max(0.0);
+    let duration = duration_sec.max(0.05).min(120.0);
+    let key = wave_cache_key(path, start, duration, buckets);
+    let cache = waveforms_dir()?.join(format!("{key}.bin"));
+    if cache.exists() {
+        if let Ok(bytes) = std::fs::read(&cache) {
+            if bytes.len() == buckets * 4 {
+                let mut out = Vec::with_capacity(buckets);
+                for chunk in bytes.chunks_exact(4) {
+                    out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+                return Ok(out);
+            }
+        }
+    }
+
+    let ffmpeg = resolve_ffmpeg_path(app)?;
+    let peaks = with_wave_slot(|| -> Result<Vec<f32>, String> {
+        let ss = format!("{start:.3}");
+        let td = format!("{duration:.3}");
+        let mut child = Command::new(&ffmpeg)
+            .args([
+                "-v", "error",
+                "-ss", &ss,
+                "-t", &td,
+                "-i", path,
+                "-vn",
+                "-ac", "1",
+                "-ar", "4000",
+                "-f", "s16le",
+                "pipe:1",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("waveform ffmpeg: {e}"))?;
+        let mut stdout = child.stdout.take().ok_or("waveform stdout")?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut stdout, &mut bytes)
+            .map_err(|e| format!("waveform read: {e}"))?;
+        let _ = child.wait();
+        if bytes.len() < 4 {
+            return Err("No audio in window".into());
+        }
+        let sample_count = bytes.len() / 2;
+        let mut peaks = vec![0.0f32; buckets];
+        let block = (sample_count as f64 / buckets as f64).max(1.0);
+        for i in 0..buckets {
+            let a = (i as f64 * block) as usize;
+            let b = (((i + 1) as f64 * block) as usize).min(sample_count);
+            let mut peak = 0.0f32;
+            for j in a..b {
+                let off = j * 2;
+                if off + 1 >= bytes.len() {
+                    break;
+                }
+                let s = i16::from_le_bytes([bytes[off], bytes[off + 1]]);
+                let v = (s as f32).abs() / 32768.0;
+                if v > peak {
+                    peak = v;
+                }
+            }
+            peaks[i] = peak;
+        }
+        let max = peaks.iter().cloned().fold(0.0001f32, f32::max);
+        for p in &mut peaks {
+            *p = (*p / max).clamp(0.0, 1.0);
+        }
+        Ok(peaks)
+    })?;
+
+    let mut flat = Vec::with_capacity(peaks.len() * 4);
+    for p in &peaks {
+        flat.extend_from_slice(&p.to_le_bytes());
+    }
+    let _ = std::fs::write(&cache, flat);
+    Ok(peaks)
 }
 
 /// Grab one frame at `time` and build a short preview video + still jpg (extendable).

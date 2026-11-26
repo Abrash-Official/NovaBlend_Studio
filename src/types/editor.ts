@@ -134,6 +134,8 @@ export function keyframesFor(
   return fx[keyframeListKey(prop)] || [];
 }
 
+export type ProxyStatus = "none" | "native" | "building" | "head" | "full";
+
 export interface MediaItem {
   id: string;
   name: string;
@@ -147,6 +149,11 @@ export interface MediaItem {
   duration: number;
   width: number;
   height: number;
+  /** Coded (pre-rotation) dimensions when known */
+  codedWidth?: number;
+  codedHeight?: number;
+  /** Display-matrix rotation degrees from probe */
+  rotation?: number;
   hasVideo: boolean;
   hasAudio: boolean;
   codec: string;
@@ -155,6 +162,8 @@ export interface MediaItem {
   statusMessage: string;
   progressPercent?: number;
   progressEtaSeconds?: number;
+  /** native = WebView2 HEVC OK; head/full = edit proxy stages */
+  proxyStatus?: ProxyStatus;
 }
 
 export interface TimelineClip {

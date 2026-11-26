@@ -1,4 +1,3 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import {
@@ -11,10 +10,15 @@ import {
   TextStyle,
   TimelineClip,
 } from "../types/editor";
-import { syncMediaAudio } from "../lib/audioEngine";
+import { resolveMediaUrl } from "../lib/mediaUrl";
+import { getLivePlayhead, setLivePlayhead } from "../lib/playheadClock";
 import { IconPause, IconPlay, IconReset } from "./Icons";
 import { CropOverlay, VideoBound } from "./CropOverlay";
 import { VideoSelectionOverlay } from "./VideoSelectionOverlay";
+
+const PREVIEW_FALLBACK_MAX = 540;
+const SEEK_DRIFT_PLAY = 0.15;
+const SEEK_DRIFT_PAUSE = 0.05;
 
 type VideoDrag = {
   id: string;
@@ -164,9 +168,9 @@ type TextDrag =
 
 export function PreviewPlayer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoLayerRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
-  const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
   const [textDrag, setTextDrag] = useState<TextDrag | null>(null);
@@ -251,22 +255,33 @@ export function PreviewPlayer() {
     if (!isPlaying) return;
     let raf = 0;
     let last = performance.now();
+    let lastStore = 0;
+    let t = useEditorStore.getState().playhead;
+    setLivePlayhead(t);
     const tick = (now: number) => {
-      const dt = (now - last) / 1000;
+      const dt = Math.min(0.08, (now - last) / 1000);
       last = now;
       const state = useEditorStore.getState();
       const end = contentEnd();
-      const next = state.playhead + dt;
-      if (next >= end) {
+      t = t + dt;
+      if (t >= end) {
         state.setPlaying(false);
         state.setPlayhead(end - 0.01);
         return;
       }
-      state.setPlayhead(next);
+      // Smooth needle every frame; store rarely (Timeline ignores playhead via useShallow)
+      setLivePlayhead(t);
+      if (now - lastStore > 200) {
+        lastStore = now;
+        useEditorStore.setState({ playhead: t });
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      useEditorStore.getState().setPlayhead(t);
+    };
   }, [isPlaying]);
 
   useEffect(() => {
@@ -386,17 +401,11 @@ export function PreviewPlayer() {
     if ((e.target as HTMLElement).closest(".preview-text-item, .crop-overlay")) {
       return;
     }
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const canvasRect = canvas.getBoundingClientRect();
-    // Map click into canvas pixel space
-    const cx =
-      ((e.clientX - canvasRect.left) / Math.max(1, canvasRect.width)) *
-      canvas.width;
-    const cy =
-      ((e.clientY - canvasRect.top) / Math.max(1, canvasRect.height)) *
-      canvas.height;
-    // Topmost first (drawn last = end of ascending visual stack = start of our drawn array is under)
+    const frame = frameRef.current;
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
     const hit = [...drawnRectsRef.current].reverse().find(
       (r) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h,
     );
@@ -435,506 +444,408 @@ export function PreviewPlayer() {
   useEffect(() => {
     let raf = 0;
     let cancelled = false;
-    let lastPaintAt = 0;
-    paintDirtyRef.current = true;
-    const unsub = useEditorStore.subscribe(() => {
-      paintDirtyRef.current = true;
-    });
+    const urlCache = new Map<string, string>();
+    const baseRotRef = new Map<string, number>();
+    const srcPathRef = new Map<string, string>();
 
-    /** One decoder per clip. dataset.src must be the asset URL (same as audioEngine). */
-    const ensureVideo = (clipId: string, src: string) => {
-      const url = convertFileSrc(src);
+    const ensureVideo = async (clipId: string, srcPath: string) => {
+      let url = urlCache.get(srcPath);
+      if (!url) {
+        url = await resolveMediaUrl(srcPath);
+        urlCache.set(srcPath, url);
+      }
       let video = videoRefs.current.get(clipId);
-      if (!video || video.dataset.src !== url) {
+      if (!video || srcPathRef.get(clipId) !== srcPath) {
         if (video) {
           try {
             video.pause();
             video.removeAttribute("src");
             video.load();
+            video.remove();
           } catch {
             /* ignore */
           }
         }
         video = document.createElement("video");
-        video.dataset.src = url;
         video.playsInline = true;
         video.preload = "auto";
         video.muted = true;
         video.crossOrigin = "anonymous";
+        video.dataset.clipId = clipId;
+        video.style.cssText =
+          "position:absolute;left:50%;top:50%;width:100%;height:100%;object-fit:contain;transform-origin:center center;will-change:transform,opacity,filter;pointer-events:none;display:none;";
         const bump = () => {
           setPreviewError(null);
           paintDirtyRef.current = true;
         };
+        video.addEventListener("loadedmetadata", () => {
+          bump();
+          const st = useEditorStore.getState();
+          const clip = st.clips.find((c) => c.id === clipId);
+          const media = clip
+            ? st.media.find((m) => m.id === clip.mediaId)
+            : undefined;
+          const displayW = media?.width || 0;
+          const displayH = media?.height || 0;
+          const probeRot = media?.rotation ?? 0;
+          if (
+            video &&
+            video.videoWidth > 0 &&
+            video.videoHeight > 0 &&
+            displayW > 0 &&
+            displayH > 0
+          ) {
+            const elemSign = Math.sign(video.videoWidth - video.videoHeight);
+            const displaySign = Math.sign(displayW - displayH);
+            if (
+              elemSign !== 0 &&
+              displaySign !== 0 &&
+              elemSign !== displaySign &&
+              Math.abs(probeRot) >= 80
+            ) {
+              baseRotRef.set(clipId, -probeRot);
+            } else {
+              baseRotRef.set(clipId, 0);
+            }
+          }
+        });
         video.addEventListener("loadeddata", bump);
         video.addEventListener("seeked", bump);
-        video.addEventListener("canplay", bump);
         video.onerror = () => {
-          setPreviewError(`Cannot decode preview: ${src.split(/[/\\]/).pop()}`);
+          setPreviewError(
+            `Cannot decode preview: ${srcPath.split(/[/\\]/).pop()}`,
+          );
         };
-        // Setting src is enough — do not call load() (restarts decode / fights seeks)
         video.src = url;
+        srcPathRef.set(clipId, srcPath);
         videoRefs.current.set(clipId, video);
+        videoLayerRef.current?.appendChild(video);
+      } else if (
+        videoLayerRef.current &&
+        video.parentElement !== videoLayerRef.current
+      ) {
+        videoLayerRef.current.appendChild(video);
       }
       return video;
     };
 
-    const paint = (now: number) => {
+    const sync = async () => {
       if (cancelled) return;
+      const now = performance.now();
       const state = useEditorStore.getState();
       const playing = state.isPlaying;
-      // CapCut-like: don't burn CPU at 60fps while paused / waiting for a frame
-      const interval = playing ? 33 : 100;
-      if (now - lastPaintAt < interval) {
-        raf = requestAnimationFrame(paint);
-        return;
-      }
-      if (
-        !paintDirtyRef.current &&
-        !playing &&
-        now - lastPaintAt < 400
-      ) {
-        raf = requestAnimationFrame(paint);
-        return;
-      }
-      lastPaintAt = now;
-      paintDirtyRef.current = playing; // keep dirty while playing
+      // Prefer live clock during playback so A/V stays smooth while store is throttled
+      const ph = playing ? getLivePlayhead() : state.playhead;
+      const frame = frameRef.current;
+      const W = Math.max(1, frame?.clientWidth || 1);
+      const H = Math.max(1, frame?.clientHeight || 1);
 
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext("2d", { alpha: false });
-        if (ctx) {
-          const W = canvas.width;
-          const H = canvas.height;
-          const ph = state.playhead;
-          // Draw high trackIndex first (under); low index last (on top) — matches timeline top=front
-          const active = state.clips
-            .filter((c) => {
-              if (c.trackKind !== "video") return false;
-              if (ph < c.start || ph >= c.start + c.duration) return false;
-              const track = state.tracks.find((t) => t.index === c.trackIndex);
-              return !track?.hidden;
-            })
-            .sort((a, b) => b.trackIndex - a.trackIndex);
-          const drawn: DrawnRect[] = [];
-          const bottomVideoIndex = active.length
-            ? Math.max(...active.map((c) => c.trackIndex))
-            : -1;
-          // Blur letterbox must paint once under every layer (lane stacks share trackIndex)
-          let blurFillDrawn = false;
+      const active = state.clips
+        .filter((c) => {
+          if (c.trackKind !== "video") return false;
+          if (ph < c.start || ph >= c.start + c.duration) return false;
+          const track = state.tracks.find((t) => t.index === c.trackIndex);
+          return !track?.hidden;
+        })
+        .sort((a, b) => b.trackIndex - a.trackIndex);
 
-          const mediaTFor = (clip: TimelineClip) => {
-            if (isStillClip(clip)) {
-              return Math.min(0.04, Math.max(0, clip.inPoint));
-            }
-            const speed = Math.max(0.05, clip.effects.speed || 1);
-            const t =
-              clip.inPoint + Math.max(0, ph - clip.start) * speed;
-            const maxT = Math.max(clip.inPoint, clip.outPoint - 0.001);
-            return Math.min(maxT, Math.max(clip.inPoint, t));
-          };
+      const audibleId =
+        active.find((c) => {
+          const track = state.tracks.find((t) => t.index === c.trackIndex);
+          if (track?.muted) return false;
+          if (!c.hasAudio) return false;
+          return (c.effects.volume ?? 1) > 0.01;
+        })?.id ?? null;
 
-          ctx.fillStyle = "#000";
-          ctx.fillRect(0, 0, W, H);
+      const activeIds = new Set(active.map((c) => c.id));
+      const blurKeep = new Set<string>();
+      const drawn: DrawnRect[] = [];
+      const bottomVideoIndex = active.length
+        ? Math.max(...active.map((c) => c.trackIndex))
+        : -1;
 
-          if (active.length === 0) {
-            ctx.fillStyle = "#8a96a8";
-            ctx.font = "16px Segoe UI";
-            ctx.textAlign = "center";
-            ctx.fillText("No clip at playhead — scrub back onto a clip", W / 2, H / 2);
-          }
-
-          const audibleId =
-            active.find((c) => {
-              const track = state.tracks.find((t) => t.index === c.trackIndex);
-              if (track?.muted) return false;
-              if (!c.hasAudio) return false;
-              return (c.effects.volume ?? 1) > 0.01;
-            })?.id ?? null;
-
-          // Dedicated A1 (and other) audio clips — Web Audio for gain > 1 + voice FX
-          const activeAudio = state.clips.filter((c) => {
-            if (c.trackKind !== "audio") return false;
-            if (ph < c.start || ph >= c.start + c.duration) return false;
-            const track = state.tracks.find((t) => t.index === c.trackIndex);
-            return !track?.hidden && !track?.muted && c.hasAudio;
-          });
-          const ensureAudio = (clipId: string) => {
-            let el = audioRefs.current.get(clipId);
-            if (!el) {
-              el = new Audio();
-              el.preload = "auto";
-              el.crossOrigin = "anonymous";
-              audioRefs.current.set(clipId, el);
-            }
-            return el;
-          };
-          for (const [id, el] of audioRefs.current) {
-            if (!activeAudio.some((c) => c.id === id)) {
-              if (!el.paused) el.pause();
-              el.muted = true;
-            }
-          }
-          for (const aClip of activeAudio) {
-            const src = aClip.previewPath || aClip.mediaPath;
-            if (!src) continue;
-            const el = ensureAudio(aClip.id);
-            const localT = ph - aClip.start;
-            let gain = Math.max(0, aClip.effects.volume ?? 1);
-            const afi = aClip.effects.audioFadeIn || 0;
-            const afo = aClip.effects.audioFadeOut || 0;
-            if (afi > 0 && localT < afi) gain *= localT / afi;
-            if (afo > 0 && localT > aClip.duration - afo) {
-              gain *= Math.max(0, (aClip.duration - localT) / afo);
-            }
-            const mediaT = Math.min(
-              aClip.outPoint - 0.02,
-              Math.max(
-                aClip.inPoint,
-                localT * (aClip.effects.speed || 1) + aClip.inPoint,
-              ),
-            );
-            void syncMediaAudio({
-              id: `a_${aClip.id}`,
-              el,
-              srcPath: src,
-              playing: state.isPlaying,
-              mediaTime: mediaT,
-              volumeLinear: gain,
-              voiceEffect: aClip.effects.voiceEffect || "none",
-              speed: aClip.effects.speed || 1,
-              muted: gain < 0.001,
-            });
-          }
-
-          const activeIds = new Set(active.map((c) => c.id));
-          for (const clip of active) {
-            const track = state.tracks.find((t) => t.index === clip.trackIndex);
-            const src = clip.previewPath || clip.mediaPath;
-            if (!src) continue;
-            const video = ensureVideo(clip.id, src);
-            video.muted = true;
-            const clipLocalT = ph - clip.start;
-            let audioGain = Math.max(0, clip.effects.volume ?? 1);
-            if (!clip.hasAudio) audioGain = 0;
-            const afi = clip.effects.audioFadeIn || 0;
-            const afo = clip.effects.audioFadeOut || 0;
-            if (afi > 0 && clipLocalT < afi) audioGain *= clipLocalT / afi;
-            if (afo > 0 && clipLocalT > clip.duration - afo) {
-              audioGain *= Math.max(0, (clip.duration - clipLocalT) / afo);
-            }
-            const videoAudible =
-              !!clip.hasAudio &&
-              !track?.muted &&
-              clip.id === audibleId &&
-              audioGain >= 0.01;
-            if (videoAudible && src) {
-              void syncMediaAudio({
-                id: `v_${clip.id}`,
-                el: video,
-                srcPath: src,
-                playing: state.isPlaying && !isStillClip(clip),
-                mediaTime: 0,
-                volumeLinear: audioGain,
-                voiceEffect: "none",
-                speed: 1,
-                muted: false,
-                controlTransport: false,
-              });
-            }
-
-            const local = mediaTFor(clip);
-            const drift = Math.abs((video.currentTime || 0) - local);
-            // Never interrupt an in-flight seek — that left preview stuck on "Loading frame…"
-            if (!video.seeking && video.readyState >= 1) {
-              if (isStillClip(clip)) {
-                if (drift > 0.03) {
-                  try {
-                    video.currentTime = local;
-                  } catch {
-                    /* ignore */
-                  }
-                }
-              } else if (!state.isPlaying) {
-                if (drift > 0.05) {
-                  try {
-                    video.currentTime = local;
-                  } catch {
-                    /* ignore */
-                  }
-                }
-              } else if (drift > 0.45) {
-                try {
-                  video.currentTime = local;
-                } catch {
-                  /* ignore */
-                }
-              }
-            }
-
-            if (isStillClip(clip) || !state.isPlaying) {
-              if (!video.paused) video.pause();
-            } else if (video.paused) {
-              void video.play().catch(() => undefined);
-            }
-
-            if (video.seeking || video.readyState < 2 || !video.videoWidth) {
-              ctx.fillStyle = "#8a96a8";
-              ctx.font = "14px Segoe UI";
-              ctx.textAlign = "center";
-              ctx.fillText("Loading frame…", W / 2, H / 2);
-              paintDirtyRef.current = true;
-              continue;
-            }
-
-            const fx = clip.effects;
-            const localT = ph - clip.start;
-            const scale = lerp(fx.scaleKeyframes || [], localT, fx.scale);
-            const rot = lerp(
-              fx.rotationKeyframes || [],
-              localT,
-              fx.rotation,
-            );
-            const posX = lerp(fx.posXKeyframes || [], localT, fx.posX ?? 0);
-            const posY = lerp(fx.posYKeyframes || [], localT, fx.posY ?? 0);
-
-            const hiddenFx = new Set(
-              state.tracks.filter((t) => t.hidden && t.kind === "fx").map((t) => t.index),
-            );
-            const fxLayer = activeFxClipAt(state.clips, ph, hiddenFx);
-            const maskLayer = activeMaskClipAt(state.clips, ph, hiddenFx);
-            const lookId = fxLayer?.effects?.effect || fx.effect || "none";
-            // Prefer tunable values from the F1 clip when one is active
-            const lookFx = fxLayer?.effects
-              ? {
-                  ...fx,
-                  ...fxLayer.effects,
-                  // Keep clip transform from the video; color/look from FX layer
-                  scale: fx.scale,
-                  rotation: fx.rotation,
-                  mirrorH: fx.mirrorH,
-                  mirrorV: fx.mirrorV,
-                  speed: fx.speed,
-                  fadeIn: fx.fadeIn,
-                  fadeOut: fx.fadeOut,
-                  scaleKeyframes: fx.scaleKeyframes,
-                  opacityKeyframes: fx.opacityKeyframes,
-                }
-              : fx;
-            const maskFx =
-              maskLayer?.effects?.maskEnabled || maskLayer?.effects?.effect === "mask"
-                ? maskLayer.effects
-                : fx.maskEnabled
-                  ? fx
-                  : null;
-
-            const opacity =
-              lerp(fx.opacityKeyframes, localT, fx.opacity) *
-              fadeMultiplier(localT, clip.duration, fx.fadeIn || 0, fx.fadeOut || 0);
-
-            const blend =
-              fx.blendMode === "screen"
-                ? "screen"
-                : fx.blendMode === "multiply"
-                  ? "multiply"
-                  : fx.blendMode === "overlay"
-                    ? "overlay"
-                    : fx.blendMode === "lighten"
-                      ? "lighten"
-                      : fx.blendMode === "color-dodge"
-                        ? "color-dodge"
-                        : "source-over";
-
-            const drawVideo = (
-              targetW: number,
-              targetH: number,
-              x: number,
-              y: number,
-            ) => {
-              ctx.save();
-              ctx.globalAlpha = opacity;
-              ctx.globalCompositeOperation = blend as GlobalCompositeOperation;
-              ctx.translate(x + targetW / 2, y + targetH / 2);
-              ctx.rotate((rot * Math.PI) / 180);
-              ctx.scale(fx.mirrorH ? -scale : scale, fx.mirrorV ? -scale : scale);
-              if (maskFx) {
-                const mx = -targetW / 2 + (maskFx.cropX || 0) * targetW;
-                const my = -targetH / 2 + (maskFx.cropY || 0) * targetH;
-                const mw = Math.max(2, (maskFx.cropW || 1) * targetW);
-                const mh = Math.max(2, (maskFx.cropH || 1) * targetH);
-                const shape = maskFx.maskShape || "box";
-                ctx.beginPath();
-                if (shape === "circle") {
-                  ctx.ellipse(
-                    mx + mw / 2,
-                    my + mh / 2,
-                    mw / 2,
-                    mh / 2,
-                    0,
-                    0,
-                    Math.PI * 2,
-                  );
-                } else {
-                  const r =
-                    shape === "rounded"
-                      ? Math.min(mw, mh) * 0.18
-                      : shape === "square"
-                        ? Math.min(12, (maskFx.maskFeather || 0) * 0.4)
-                        : Math.min(24, (maskFx.maskFeather || 0) * 0.6);
-                  if (
-                    typeof (ctx as CanvasRenderingContext2D).roundRect ===
-                    "function"
-                  ) {
-                    ctx.roundRect(mx, my, mw, mh, r);
-                  } else {
-                    ctx.rect(mx, my, mw, mh);
-                  }
-                }
-                ctx.clip();
-              }
-              ctx.filter = cssFilterForEffect(lookId, lookFx);
-              if (fx.removeBg || lookFx.removeBg) {
-                const tw = Math.max(2, Math.round(targetW));
-                const th = Math.max(2, Math.round(targetH));
-                const off = document.createElement("canvas");
-                off.width = tw;
-                off.height = th;
-                const octx = off.getContext("2d");
-                if (octx) {
-                  octx.drawImage(video, 0, 0, tw, th);
-                  const img = octx.getImageData(0, 0, tw, th);
-                  const d = img.data;
-                  // Sample corners for key color (typical studio / green screen)
-                  const samples = [
-                    0,
-                    (tw - 1) * 4,
-                    (th - 1) * tw * 4,
-                    ((th - 1) * tw + (tw - 1)) * 4,
-                  ];
-                  let sr = 0;
-                  let sg = 0;
-                  let sb = 0;
-                  for (const i of samples) {
-                    sr += d[i];
-                    sg += d[i + 1];
-                    sb += d[i + 2];
-                  }
-                  sr /= 4;
-                  sg /= 4;
-                  sb /= 4;
-                  const thresh = 48;
-                  for (let i = 0; i < d.length; i += 4) {
-                    const dr = Math.abs(d[i] - sr);
-                    const dg = Math.abs(d[i + 1] - sg);
-                    const db = Math.abs(d[i + 2] - sb);
-                    if (dr + dg + db < thresh * 3) {
-                      d[i + 3] = 0;
-                    }
-                  }
-                  octx.putImageData(img, 0, 0);
-                  ctx.drawImage(off, -targetW / 2, -targetH / 2, targetW, targetH);
-                } else {
-                  ctx.drawImage(video, -targetW / 2, -targetH / 2, targetW, targetH);
-                }
-              } else {
-                ctx.drawImage(video, -targetW / 2, -targetH / 2, targetW, targetH);
-              }
-              ctx.restore();
-            };
-
-            // CapCut Blur: one cover fill behind all layers (never between stacked clips)
-            if (
-              !blurFillDrawn &&
-              clip.trackIndex === bottomVideoIndex &&
-              state.backgroundBlur &&
-              video.videoWidth > 0 &&
-              video.videoHeight > 0
-            ) {
-              const cover = Math.max(
-                W / video.videoWidth,
-                H / video.videoHeight,
-              );
-              const bw = video.videoWidth * cover;
-              const bh = video.videoHeight * cover;
-              ctx.save();
-              ctx.filter = "blur(12px) brightness(0.55)";
-              ctx.drawImage(video, (W - bw) / 2, (H - bh) / 2, bw, bh);
-              ctx.restore();
-              blurFillDrawn = true;
-            }
-            const fit = Math.min(W / video.videoWidth, H / video.videoHeight);
-            const dw = video.videoWidth * fit;
-            const dh = video.videoHeight * fit;
-            const dx = (W - dw) / 2 + posX * W;
-            const dy = (H - dh) / 2 + posY * H;
-            drawVideo(dw, dh, dx, dy);
-            const bx = dx + dw / 2 - (dw * scale) / 2;
-            const by = dy + dh / 2 - (dh * scale) / 2;
-            const bw = dw * scale;
-            const bh = dh * scale;
-            drawn.push({
-              id: clip.id,
-              x: bx,
-              y: by,
-              w: bw,
-              h: bh,
-              nx: bx / W,
-              ny: by / H,
-              nw: bw / W,
-              nh: bh / H,
-            });
-
-            if (clip.trackIndex === bottomVideoIndex) {
-              const vig = lookFx.vignetteAmount ?? 0;
-              if (vig > 0.02) {
-                const g = ctx.createRadialGradient(
-                  W / 2,
-                  H / 2,
-                  Math.min(W, H) * (0.35 - vig * 0.12),
-                  W / 2,
-                  H / 2,
-                  Math.max(W, H) * 0.72,
-                );
-                g.addColorStop(0, "rgba(0,0,0,0)");
-                g.addColorStop(
-                  1,
-                  `rgba(0,0,0,${Math.min(0.92, 0.35 + vig * 0.55).toFixed(3)})`,
-                );
-                ctx.fillStyle = g;
-                ctx.fillRect(0, 0, W, H);
-              }
-            }
-          }
-          drawnRectsRef.current = drawn;
-          const selId = state.selectedClipId;
-          const sel = selId ? drawn.find((d) => d.id === selId) : null;
-          const key = sel
-            ? `${sel.id}:${sel.nx.toFixed(3)},${sel.ny.toFixed(3)},${sel.nw.toFixed(3)},${sel.nh.toFixed(3)}`
-            : "";
-          if (
-            key !== lastBoundKeyRef.current &&
-            now - lastBoundSetAtRef.current > 50
-          ) {
-            lastBoundKeyRef.current = key;
-            lastBoundSetAtRef.current = now;
-            setSelectedBound(
-              sel
-                ? { x: sel.nx, y: sel.ny, w: sel.nw, h: sel.nh }
-                : null,
-            );
-          }
-
-          // Pause decoders for clips not under the playhead (keep element cached)
-          for (const [id, video] of videoRefs.current) {
-            if (!activeIds.has(id) && !video.paused) {
-              video.pause();
-            }
-          }
+      for (const [id, video] of videoRefs.current) {
+        const isBlur = id.endsWith("__blur");
+        const mainId = isBlur ? id.slice(0, -6) : id;
+        if (!activeIds.has(mainId)) {
+          if (!video.paused) video.pause();
+          video.style.display = "none";
+          video.muted = true;
         }
       }
-      raf = requestAnimationFrame(paint);
+
+      // Clear fallback canvas each frame
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext("2d");
+        ctx?.clearRect(0, 0, canvas.width, canvas.height);
+      }
+
+      for (const clip of active) {
+        const track = state.tracks.find((t) => t.index === clip.trackIndex);
+        const mediaItem = state.media.find((m) => m.id === clip.mediaId);
+        const original = clip.mediaPath || mediaItem?.path || "";
+        let src = clip.previewPath || mediaItem?.previewPath || original;
+        if (!src) continue;
+
+        const speed = Math.max(0.05, clip.effects.speed || 1);
+        const mediaT = isStillClip(clip)
+          ? Math.min(0.04, Math.max(0, clip.inPoint))
+          : Math.min(
+              clip.outPoint - 0.001,
+              Math.max(
+                clip.inPoint,
+                clip.inPoint + Math.max(0, ph - clip.start) * speed,
+              ),
+            );
+        if (
+          original &&
+          src !== original &&
+          /_head\.mp4$/i.test(src) &&
+          mediaT > 58
+        ) {
+          src = original;
+        }
+
+        const video = await ensureVideo(clip.id, src);
+        if (cancelled) return;
+
+        const fx = clip.effects;
+        const localT = ph - clip.start;
+        const scale = lerp(fx.scaleKeyframes || [], localT, fx.scale);
+        const userRot = lerp(
+          fx.rotationKeyframes || [],
+          localT,
+          fx.rotation,
+        );
+        const posX = lerp(fx.posXKeyframes || [], localT, fx.posX ?? 0);
+        const posY = lerp(fx.posYKeyframes || [], localT, fx.posY ?? 0);
+        const opacity =
+          lerp(fx.opacityKeyframes, localT, fx.opacity) *
+          fadeMultiplier(
+            localT,
+            clip.duration,
+            fx.fadeIn || 0,
+            fx.fadeOut || 0,
+          );
+
+        const hiddenFx = new Set(
+          state.tracks
+            .filter((t) => t.hidden && t.kind === "fx")
+            .map((t) => t.index),
+        );
+        const fxLayer = activeFxClipAt(state.clips, ph, hiddenFx);
+        const maskLayer = activeMaskClipAt(state.clips, ph, hiddenFx);
+        const lookId = fxLayer?.effects?.effect || fx.effect || "none";
+        const lookFx = fxLayer?.effects
+          ? {
+              ...fx,
+              ...fxLayer.effects,
+              scale: fx.scale,
+              rotation: fx.rotation,
+            }
+          : fx;
+        const maskFx =
+          maskLayer?.effects?.maskEnabled ||
+          maskLayer?.effects?.effect === "mask"
+            ? maskLayer.effects
+            : fx.maskEnabled
+              ? fx
+              : null;
+
+        const needsCanvas = !!(fx.removeBg || lookFx.removeBg);
+        const baseRot = baseRotRef.get(clip.id) || 0;
+        const totalRot = baseRot + userRot;
+
+        let audioGain = Math.max(0, Math.min(1, fx.volume ?? 1));
+        if (!clip.hasAudio) audioGain = 0;
+        const afi = fx.audioFadeIn || 0;
+        const afo = fx.audioFadeOut || 0;
+        if (afi > 0 && localT < afi) audioGain *= localT / afi;
+        if (afo > 0 && localT > clip.duration - afo) {
+          audioGain *= Math.max(0, (clip.duration - localT) / afo);
+        }
+        const videoAudible =
+          !!clip.hasAudio &&
+          !track?.muted &&
+          clip.id === audibleId &&
+          audioGain >= 0.01;
+        video.muted = !videoAudible;
+        video.volume = videoAudible ? audioGain : 0;
+
+        const local =
+          video.duration > 0 && Number.isFinite(video.duration)
+            ? Math.min(mediaT, Math.max(0, video.duration - 0.02))
+            : mediaT;
+        const drift = Math.abs((video.currentTime || 0) - local);
+        const driftLimit = playing ? SEEK_DRIFT_PLAY : SEEK_DRIFT_PAUSE;
+        if (!video.seeking && video.readyState >= 1 && drift > driftLimit) {
+          try {
+            video.currentTime = local;
+          } catch {
+            /* ignore */
+          }
+        }
+        if (isStillClip(clip) || !playing) {
+          if (!video.paused) video.pause();
+        } else if (video.paused) {
+          void video.play().catch(() => undefined);
+        }
+
+        const vw = video.videoWidth || mediaItem?.width || 1;
+        const vh = video.videoHeight || mediaItem?.height || 1;
+        const fit = Math.min(W / vw, H / vh);
+        const dw = vw * fit;
+        const dh = vh * fit;
+        const dx = (W - dw) / 2 + posX * W;
+        const dy = (H - dh) / 2 + posY * H;
+        const sx = (fx.mirrorH ? -1 : 1) * scale;
+        const sy = (fx.mirrorV ? -1 : 1) * scale;
+
+        // CapCut Blur: cover-fill behind letterboxed video (GPU CSS, no canvas)
+        const wantBlur =
+          !!state.backgroundBlur &&
+          clip.trackIndex === bottomVideoIndex &&
+          !needsCanvas &&
+          (dw < W - 2 || dh < H - 2);
+        if (wantBlur) {
+          const blur = await ensureVideo(`${clip.id}__blur`, src);
+          blurKeep.add(`${clip.id}__blur`);
+          blur.muted = true;
+          blur.volume = 0;
+          if (
+            !blur.seeking &&
+            blur.readyState >= 1 &&
+            Math.abs((blur.currentTime || 0) - local) > driftLimit
+          ) {
+            try {
+              blur.currentTime = local;
+            } catch {
+              /* ignore */
+            }
+          }
+          if (isStillClip(clip) || !playing) {
+            if (!blur.paused) blur.pause();
+          } else if (blur.paused) {
+            void blur.play().catch(() => undefined);
+          }
+          blur.style.display = "block";
+          blur.style.zIndex = "1";
+          blur.style.left = "0";
+          blur.style.top = "0";
+          blur.style.width = "100%";
+          blur.style.height = "100%";
+          blur.style.objectFit = "cover";
+          blur.style.opacity = "1";
+          blur.style.filter = "blur(16px) brightness(0.55)";
+          blur.style.transform = "none";
+          blur.style.clipPath = "none";
+          blur.style.mixBlendMode = "normal";
+        }
+
+        if (!needsCanvas) {
+          video.style.display = "block";
+          video.style.zIndex = String(1000 - clip.trackIndex);
+          video.style.left = `${(dx / W) * 100}%`;
+          video.style.top = `${(dy / H) * 100}%`;
+          video.style.width = `${(dw / W) * 100}%`;
+          video.style.height = `${(dh / H) * 100}%`;
+          video.style.objectFit = "fill";
+          video.style.opacity = String(opacity);
+          video.style.filter = cssFilterForEffect(lookId, lookFx);
+          video.style.mixBlendMode =
+            fx.blendMode && fx.blendMode !== "normal"
+              ? fx.blendMode
+              : "normal";
+          video.style.transform = `rotate(${totalRot}deg) scale(${sx}, ${sy})`;
+          if (maskFx) {
+            const mx = (maskFx.cropX || 0) * 100;
+            const my = (maskFx.cropY || 0) * 100;
+            const mw = (maskFx.cropW || 1) * 100;
+            const mh = (maskFx.cropH || 1) * 100;
+            const shape = maskFx.maskShape || "box";
+            if (shape === "circle") {
+              video.style.clipPath = `ellipse(${mw / 2}% ${mh / 2}% at ${mx + mw / 2}% ${my + mh / 2}%)`;
+            } else {
+              video.style.clipPath = `inset(${my}% ${Math.max(0, 100 - mx - mw)}% ${Math.max(0, 100 - my - mh)}% ${mx}%${
+                shape === "rounded" ? " round 12px" : ""
+              })`;
+            }
+          } else {
+            video.style.clipPath = "none";
+          }
+        } else if (canvas && video.readyState >= 2) {
+          video.style.display = "none";
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.save();
+            ctx.globalAlpha = opacity;
+            ctx.translate(
+              canvas.width / 2 + posX * canvas.width,
+              canvas.height / 2 + posY * canvas.height,
+            );
+            ctx.rotate((totalRot * Math.PI) / 180);
+            ctx.scale(sx, sy);
+            const tw = Math.min(PREVIEW_FALLBACK_MAX, canvas.width) * (dw / W);
+            const th = tw * (dh / Math.max(1, dw));
+            ctx.drawImage(video, -tw / 2, -th / 2, tw, th);
+            ctx.restore();
+          }
+        }
+
+        const bx = dx + dw / 2 - (dw * scale) / 2;
+        const by = dy + dh / 2 - (dh * scale) / 2;
+        const bw = dw * scale;
+        const bh = dh * scale;
+        drawn.push({
+          id: clip.id,
+          x: bx,
+          y: by,
+          w: bw,
+          h: bh,
+          nx: bx / W,
+          ny: by / H,
+          nw: bw / W,
+          nh: bh / H,
+        });
+      }
+
+      // Hide blur layers that aren't needed this frame
+      for (const [id, video] of videoRefs.current) {
+        if (id.endsWith("__blur") && !blurKeep.has(id)) {
+          video.style.display = "none";
+          if (!video.paused) video.pause();
+        }
+      }
+
+      drawnRectsRef.current = drawn;
+      const selId = state.selectedClipId;
+      const sel = selId ? drawn.find((d) => d.id === selId) : null;
+      const key = sel
+        ? `${sel.id}:${sel.nx.toFixed(3)},${sel.ny.toFixed(3)},${sel.nw.toFixed(3)},${sel.nh.toFixed(3)}`
+        : "";
+      if (
+        key !== lastBoundKeyRef.current &&
+        now - lastBoundSetAtRef.current > 50
+      ) {
+        lastBoundKeyRef.current = key;
+        lastBoundSetAtRef.current = now;
+        setSelectedBound(
+          sel ? { x: sel.nx, y: sel.ny, w: sel.nw, h: sel.nh } : null,
+        );
+      }
+
+      raf = requestAnimationFrame(() => {
+        void sync();
+      });
     };
 
-    raf = requestAnimationFrame(paint);
+    const unsub = useEditorStore.subscribe(() => {
+      paintDirtyRef.current = true;
+    });
+    raf = requestAnimationFrame(() => {
+      void sync();
+    });
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
@@ -1078,17 +989,25 @@ export function PreviewPlayer() {
               }}
               onContextMenu={(e) => e.preventDefault()}
             >
+              <div
+                ref={videoLayerRef}
+                className="absolute inset-0 overflow-hidden bg-black"
+                style={{ zIndex: 0, pointerEvents: "none" }}
+              />
               <canvas
                 ref={canvasRef}
-                width={Math.min(projectWidth, 960)}
+                width={Math.min(projectWidth, PREVIEW_FALLBACK_MAX)}
                 height={Math.min(
                   projectHeight,
                   Math.round(
-                    960 / Math.max(projectWidth / projectHeight, 0.01),
+                    PREVIEW_FALLBACK_MAX /
+                      Math.max(projectWidth / projectHeight, 0.01),
                   ),
                 )}
-                className="block h-full w-full bg-black"
+                className="relative block h-full w-full"
                 style={{
+                  zIndex: 1,
+                  background: "transparent",
                   cursor:
                     boardPanMode || boardDragging
                       ? boardDragging

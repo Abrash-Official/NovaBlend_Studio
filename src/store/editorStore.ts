@@ -21,6 +21,7 @@ import {
   TimelineTab,
   Track,
 } from "../types/editor";
+import { setLivePlayhead } from "../lib/playheadClock";
 
 type HistorySnap = {
   clips: TimelineClip[];
@@ -790,7 +791,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return trackLockedForClip(s.tracks, s.clips, clipId);
   },
   setStatus: (s) => set({ status: s }),
-  setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
+  setPlayhead: (t) => {
+    const v = Math.max(0, t);
+    setLivePlayhead(v);
+    set({ playhead: v });
+  },
   setPlaying: (v) => set({ isPlaying: v }),
   setAspect: (a) => {
     const p = ASPECT_PRESETS[a];
@@ -858,10 +863,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   addClipFromMedia: (mediaId, trackIndex) => {
     const media = get().media.find((m) => m.id === mediaId);
     if (!media) return;
-    if (media.readyState === "processing") {
-      set({ status: `Still processing “${media.name}”. Wait until it says Ready.` });
-      return;
-    }
+    // Instant import: allow timeline edit while proxy builds in background
     if (media.readyState === "error") {
       set({ status: `Cannot add “${media.name}” — preview failed.` });
       return;

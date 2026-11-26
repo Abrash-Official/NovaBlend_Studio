@@ -1,8 +1,9 @@
 import {
-  createPreviewProxy,
   previewThumbPath,
   probeMedia,
+  startBackgroundProxy,
 } from "./api";
+import { canNativeDecode } from "./mediaUrl";
 import { useEditorStore } from "../store/editorStore";
 
 function uid() {
@@ -15,14 +16,27 @@ export function isMediaPath(path: string) {
   return MEDIA_EXT.test(path);
 }
 
+function isHevc(codec: string) {
+  const c = codec.toLowerCase();
+  return c.includes("hevc") || c.includes("h265") || c.includes("h.265") || c.includes("hvc1");
+}
+
+function isBrowserFriendly(codec: string) {
+  const c = codec.toLowerCase();
+  return (
+    c.includes("h264") ||
+    c.includes("avc") ||
+    c.includes("vp8") ||
+    c.includes("vp9") ||
+    c.includes("av01") ||
+    c.includes("av1")
+  );
+}
+
 /** Import local file paths into the media bin (shared by Import button + drag/drop). */
 export async function importMediaFiles(paths: string[]) {
-  const {
-    addMedia,
-    updateMedia,
-    bumpProcessing,
-    setStatus,
-  } = useEditorStore.getState();
+  const { addMedia, updateMedia, bumpProcessing, setStatus } =
+    useEditorStore.getState();
 
   const usable = paths.filter(isMediaPath);
   if (!usable.length) {
@@ -35,6 +49,8 @@ export async function importMediaFiles(paths: string[]) {
     const id = uid();
     try {
       const probe = await probeMedia(path);
+
+      // Instant Ready — editable on timeline immediately (CapCut-like)
       addMedia({
         id,
         name,
@@ -43,14 +59,18 @@ export async function importMediaFiles(paths: string[]) {
         duration: probe.duration || 5,
         width: probe.width,
         height: probe.height,
+        codedWidth: probe.codedWidth,
+        codedHeight: probe.codedHeight,
+        rotation: probe.rotation ?? 0,
         hasVideo: probe.hasVideo,
         hasAudio: probe.hasAudio,
         codec: probe.codec,
         fps: probe.fps || 30,
-        readyState: probe.hasVideo ? "processing" : "ready",
-        statusMessage: probe.hasVideo ? "Starting…" : "Ready",
-        progressPercent: probe.hasVideo ? 0 : 100,
-        progressEtaSeconds: probe.hasVideo ? probe.duration : 0,
+        readyState: "ready",
+        statusMessage: probe.hasVideo ? "Ready" : "Ready",
+        progressPercent: 100,
+        progressEtaSeconds: 0,
+        proxyStatus: "none",
       });
 
       if (!probe.hasVideo) {
@@ -58,40 +78,99 @@ export async function importMediaFiles(paths: string[]) {
         continue;
       }
 
-      bumpProcessing(1);
-      setStatus(`Processing “${name}”…`);
-
-      try {
-        const previewPath = await createPreviewProxy(probe.path);
-        let thumbPath: string | undefined;
-        try {
-          thumbPath = (await previewThumbPath(previewPath)) || undefined;
-        } catch {
-          /* optional */
-        }
+      if (isBrowserFriendly(probe.codec)) {
         updateMedia(id, {
-          previewPath,
-          thumbPath,
-          readyState: "ready",
-          statusMessage:
-            previewPath === probe.path ? "Ready" : "Ready · H.264 preview",
-          progressPercent: 100,
-          progressEtaSeconds: 0,
+          proxyStatus: "native",
+          statusMessage: "Ready",
         });
         setStatus(`Ready: ${name}`);
-      } catch (e) {
-        updateMedia(id, {
-          readyState: "error",
-          statusMessage: `Failed: ${e}`,
-          progressPercent: 0,
-        });
-        setStatus(`Preview failed for ${name}: ${e}`);
-      } finally {
-        bumpProcessing(-1);
+        continue;
       }
+
+      // HEVC / exotic: try native WebView2 hardware decode first
+      if (isHevc(probe.codec) || !isBrowserFriendly(probe.codec)) {
+        setStatus(`Checking hardware decode: ${name}…`);
+        const nativeOk = await canNativeDecode(probe.path, 1500);
+        if (nativeOk) {
+          updateMedia(id, {
+            previewPath: probe.path,
+            proxyStatus: "native",
+            statusMessage: "Ready · native HEVC",
+            progressPercent: 100,
+          });
+          setStatus(`Ready (native): ${name}`);
+          continue;
+        }
+      }
+
+      // Background: edit head (~60s) then full proxy — non-blocking
+      bumpProcessing(1);
+      updateMedia(id, {
+        proxyStatus: "building",
+        statusMessage: "Building edit proxy…",
+        progressPercent: 2,
+      });
+      setStatus(`Proxy for “${name}” (timeline already editable)…`);
+
+      void (async () => {
+        try {
+          await startBackgroundProxy(probe.path);
+          // Hot-swap handled by proxy-ready listener in Toolbar / App
+          let thumbPath: string | undefined;
+          try {
+            const state = useEditorStore.getState();
+            const item = state.media.find((m) => m.id === id);
+            if (item?.previewPath) {
+              thumbPath =
+                (await previewThumbPath(item.previewPath)) || undefined;
+            }
+          } catch {
+            /* optional */
+          }
+          if (thumbPath) {
+            updateMedia(id, { thumbPath });
+          }
+        } catch (e) {
+          updateMedia(id, {
+            statusMessage: `Proxy failed (native path kept): ${e}`,
+            proxyStatus: "none",
+            progressPercent: 100,
+          });
+          setStatus(`Proxy failed for ${name}: ${e}`);
+        } finally {
+          bumpProcessing(-1);
+        }
+      })();
     } catch (e) {
       setStatus(`Import failed: ${e}`);
     }
+  }
+}
+
+/** Manual "Create Proxy" from Media Bin. */
+export async function requestCreateProxy(mediaId: string) {
+  const { media, updateMedia, bumpProcessing, setStatus } =
+    useEditorStore.getState();
+  const item = media.find((m) => m.id === mediaId);
+  if (!item?.path || !item.hasVideo) return;
+  if (item.proxyStatus === "building" || item.proxyStatus === "full") return;
+
+  bumpProcessing(1);
+  updateMedia(mediaId, {
+    proxyStatus: "building",
+    statusMessage: "Building edit proxy…",
+    progressPercent: 2,
+  });
+  setStatus(`Creating proxy: ${item.name}`);
+  try {
+    await startBackgroundProxy(item.path);
+  } catch (e) {
+    updateMedia(mediaId, {
+      statusMessage: `Proxy failed: ${e}`,
+      proxyStatus: item.proxyStatus || "none",
+    });
+  } finally {
+    bumpProcessing(-1);
   }
 }
 
@@ -105,7 +184,6 @@ export async function pathsFromDrop(e: DragEvent): Promise<string[]> {
       if (f.path) paths.push(f.path);
     }
   }
-  // Tauri 2 drag-drop may expose paths via dataTransfer items
   if (!paths.length && e.dataTransfer) {
     try {
       const raw = e.dataTransfer.getData("text/uri-list");
@@ -118,7 +196,7 @@ export async function pathsFromDrop(e: DragEvent): Promise<string[]> {
             if (/^[A-Za-z]:/.test(p) === false && p.startsWith("/")) {
               // unix
             } else if (p.startsWith("/")) {
-              p = p.slice(1); // Windows /C:/...
+              p = p.slice(1);
             }
             paths.push(p.replace(/\//g, "\\"));
           }
