@@ -1313,8 +1313,6 @@ export function Timeline() {
 
       {menu &&
         menuClip &&
-      {menu &&
-        menuClip &&
         createPortal(
           <div
             ref={menuRef}
